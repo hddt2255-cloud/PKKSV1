@@ -401,6 +401,17 @@
       }
     };
 
+    function extractFolderId(urlOrId) {
+      if (!urlOrId) return '';
+      urlOrId = String(urlOrId).trim();
+      if (urlOrId.includes('folders/')) {
+        return urlOrId.split('folders/')[1].split('?')[0].split('/')[0];
+      } else if (urlOrId.includes('id=')) {
+        return urlOrId.split('id=')[1].split('&')[0];
+      }
+      return urlOrId;
+    }
+
     function uploadFileToGDriveBackground(file, filename, userName, folderId, appsScriptUrl) {
       const reader = new FileReader();
       reader.onload = function() {
@@ -412,7 +423,7 @@
           p.append('mimeType', file.type || 'application/octet-stream');
           p.append('file', b64);
           p.append('user', userName);
-          p.append('folderId', folderId);
+          p.append('folderId', extractFolderId(folderId));
           originalFetch(appsScriptUrl, {
             method: 'POST',
             mode: 'no-cors',
@@ -424,6 +435,34 @@
         } catch(e) {}
       };
       reader.readAsDataURL(file);
+    }
+
+    async function deleteFileFromGDriveBackground(filename, folderId, appsScriptUrl) {
+      if (!filename) return;
+      appsScriptUrl = appsScriptUrl || PERMANENT_APPS_SCRIPT_URL;
+      const cleanFolderId = extractFolderId(folderId);
+      if (!appsScriptUrl) return;
+
+      try {
+        const p = new URLSearchParams();
+        p.append('action', 'delete');
+        p.append('fileName', filename);
+        p.append('filename', filename);
+        p.append('file', filename);
+        if (cleanFolderId) p.append('folderId', cleanFolderId);
+
+        console.log(`[GDrive] Mengirim perintah hapus berkas "${filename}" ke GDrive...`);
+
+        await originalFetch(appsScriptUrl, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: p
+        });
+        console.log(`[GDrive] Berhasil mengirim permintaan hapus berkas "${filename}" ke GDrive`);
+      } catch (err) {
+        console.warn(`[GDrive] Gagal mengirim permintaan hapus berkas "${filename}":`, err);
+      }
     }
 
     function getSchoolsDb() {
@@ -896,23 +935,12 @@
 
       // 9. /api/delete-file
       if (pathname.includes('/api/delete-file')) {
-        const fileName = getBodyVal(body, 'file') || '';
+        const fileName = getBodyVal(body, 'filename') || getBodyVal(body, 'fileName') || getBodyVal(body, 'file') || '';
         const s = getSchoolSettings(npsn);
         const appsScriptUrl = s.appsScriptUrl || PERMANENT_APPS_SCRIPT_URL;
         const folderId = s.googleDriveLink || '';
         if (appsScriptUrl && fileName) {
-          try {
-            const p = new URLSearchParams();
-            p.append('action', 'delete');
-            p.append('fileName', fileName);
-            p.append('folderId', folderId);
-            originalFetch(appsScriptUrl, {
-              method: 'POST',
-              mode: 'no-cors',
-              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-              body: p
-            }).catch(e => console.log('Apps Script delete notice:', e));
-          } catch(e) {}
+          deleteFileFromGDriveBackground(fileName, folderId, appsScriptUrl);
         }
         return jsonResponse({ status: 'success', message: 'File berhasil dihapus!' });
       }
@@ -1989,14 +2017,29 @@
       if (state.scores[itemId] && state.scores[itemId].uploadedFiles) {
         const targetFile = state.scores[itemId].uploadedFiles.find(f => f.id === fileId);
         const fileNameToDelete = targetFile ? (targetFile.savedName || targetFile.name) : null;
+        const origFileName = targetFile ? targetFile.name : null;
         const fileKey = targetFile ? (targetFile.fileKey || targetFile.id) : fileId;
 
-        // Clean from IndexedDB
-        if (fileKey) {
-          await PkksFileDB.delete(fileKey);
-        }
+        // Clean from IndexedDB (all keys)
+        if (fileKey) await PkksFileDB.delete(fileKey);
+        if (targetFile && targetFile.savedName) await PkksFileDB.delete(targetFile.savedName);
+        if (targetFile && targetFile.name) await PkksFileDB.delete(targetFile.name);
+        if (fileId) await PkksFileDB.delete(fileId);
 
         state.scores[itemId].uploadedFiles = state.scores[itemId].uploadedFiles.filter(f => f.id !== fileId);
+
+        // Delete from Google Drive directly via Apps Script Web App
+        const npsn = state.schoolNpsn || '20231556';
+        const s = getSchoolSettings(npsn);
+        const appsScriptUrl = s.appsScriptUrl || PERMANENT_APPS_SCRIPT_URL;
+        const folderId = s.googleDriveLink || '';
+
+        if (fileNameToDelete) {
+          deleteFileFromGDriveBackground(fileNameToDelete, folderId, appsScriptUrl);
+          if (origFileName && origFileName !== fileNameToDelete) {
+            deleteFileFromGDriveBackground(origFileName, folderId, appsScriptUrl);
+          }
+        }
 
         if (fileNameToDelete) {
           try {
@@ -2005,7 +2048,10 @@
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 filename: fileNameToDelete,
-                user: state.activeDataUserId
+                fileName: fileNameToDelete,
+                file: fileNameToDelete,
+                user: state.activeDataUserId,
+                npsn: npsn
               })
             });
           } catch (err) {
