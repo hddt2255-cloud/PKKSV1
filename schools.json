@@ -1,1 +1,14 @@
-{"12345678": {"nama": "Sekolah Tes", "npsn": "12345678"}, "20231556": {"nama": "sdit annisa", "npsn": "20231556"}, "5555": {"nama": "Sekolah 5", "npsn": "5555"}, "123456": {"nama": "123456", "npsn": "123456"}, "1234567": {"nama": "1234567", "npsn": "1234567"}}
+{
+  "20231556": {
+    "nama": "SDIT ANNISA",
+    "npsn": "20231556",
+    "kepsek": "Abdul Yakub, S.Ag",
+    "password": "20231556"
+  },
+  "123456": {
+    "nama": "SD ANU",
+    "npsn": "123456",
+    "kepsek": "Anuari, S.Pd",
+    "password": "123456"
+  }
+}

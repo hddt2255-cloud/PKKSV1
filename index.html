@@ -486,6 +486,7 @@
           defaultPassword: "Sditannisa",
           tanggalCetak: "Bekasi, 29 September 2026",
           googleDriveLink: "",
+          appsScriptUrl: "https://script.google.com/macros/s/AKfycbykNKnIhlwXTr-u6OX7rBbAmyyWq1J3OKtJUOQ5ocg1yowiyswFIUEByRbipMQN9qBM/exec",
           users: DEFAULT_USERS
         };
         this.selectedTeacherId = 'abdul_yakub';
@@ -500,6 +501,14 @@
         this.selectedCetakStandar = 'standar-1';
         this.mobileSidebarOpen = false;
 
+        this.superAdminAuth = sessionStorage.getItem('pkks_superadmin_auth') === 'hdt123';
+        this.superAdminAuthModalOpen = false;
+        this.superAdminDashboardOpen = false;
+        this.superAdminSchools = [];
+        this.superAdminSchoolModalOpen = false;
+        this.superAdminSchoolModalData = null;
+        this.superAdminSearchQuery = '';
+
         this.init();
       }
 
@@ -509,6 +518,9 @@
           if (res.ok) {
             const data = await res.json();
             this.settings = data;
+            if (!this.settings.appsScriptUrl) {
+              this.settings.appsScriptUrl = "https://script.google.com/macros/s/AKfycbykNKnIhlwXTr-u6OX7rBbAmyyWq1J3OKtJUOQ5ocg1yowiyswFIUEByRbipMQN9qBM/exec";
+            }
             if (Array.isArray(data.users) && data.users.length > 0) {
               this.userList = data.users;
             }
@@ -548,10 +560,10 @@
       }
 
       get activeDataUserId() {
-        if (this.currentUser && this.currentUser.role === 'kepsek' && this.selectedTeacherId) {
+        if (this.selectedTeacherId) {
           return this.selectedTeacherId;
         }
-        return this.currentUser ? this.currentUser.id : 'abdul_yakub';
+        return this.currentUser ? this.currentUser.id : 'admin';
       }
 
       async loadUserData() {
@@ -584,11 +596,15 @@
       }
 
       async saveScores() {
+        const currentTargetName = this.activeDataUserId === 'all'
+          ? "Semuanya (Gabungan Seluruh Guru)"
+          : ((this.userList.find(u => u.id === this.activeDataUserId) || {}).name || this.activeDataUserId);
+
         const payload = {
           user: this.activeDataUserId,
           profile: {
-            namaSekolah: this.settings.namaSekolah || "SDIT ANNISA BOGOR",
-            namaGuru: (this.userList.find(u => u.id === this.activeDataUserId) || {}).name || this.activeDataUserId,
+            namaSekolah: this.settings.namaSekolah || "SDIT ANNISA",
+            namaGuru: currentTargetName,
             namaKepalaSekolah: this.settings.namaKepalaSekolah || "Abdul Yakub, S.Ag",
             tahunPelajaran: "2025/2026"
           },
@@ -602,6 +618,26 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
           });
+
+          // If we saved in 'all' view, also persist to current user's personal file so it's visible under their account
+          if (this.activeDataUserId === 'all' && this.currentUser && this.currentUser.id !== 'all') {
+            await fetch('/api/save', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                user: this.currentUser.id,
+                profile: {
+                  namaSekolah: this.settings.namaSekolah || "SDIT ANNISA",
+                  namaGuru: this.currentUser.name,
+                  namaKepalaSekolah: this.settings.namaKepalaSekolah || "Abdul Yakub, S.Ag",
+                  tahunPelajaran: "2025/2026"
+                },
+                scores: this.scores,
+                supervisi: this.supervisi || {}
+              })
+            });
+          }
+
           this.showToast('✓ Data berhasil disimpan!');
         } catch (e) {
           this.showToast('✓ Data disimpan!');
@@ -673,28 +709,29 @@
         });
         const data = await res.json();
         if (data.status === 'success' || res.ok) {
-          const userObj = data.user || state.userList.find(u => u.id === username) || { id: username, name: username, role: 'guru' };
+          const userObj = data.user || (username === 'all' 
+            ? { id: 'all', name: 'Semuanya (Gabungan Seluruh Guru)', role: 'kepsek' } 
+            : (state.userList.find(u => u.id === username) || { id: username, name: username, role: 'guru' }));
           state.currentUser = userObj;
-          if (userObj.role === 'kepsek') {
-            state.selectedTeacherId = userObj.id;
-          }
+          state.selectedTeacherId = userObj.id;
           await state.loadUserData();
           state.showToast(`✓ Selamat Datang, ${userObj.name}!`);
         } else {
           alert(data.message || 'Username atau Password salah!');
         }
       } catch (err) {
-        console.warn("API login fetch error, using LAN fallback logic:", err);
-        if (password === (state.settings.defaultPassword || 'Sditannisa')) {
-          const userObj = state.userList.find(u => u.id === username) || { id: username, name: username, role: 'guru' };
+        console.warn("API login fetch error, using fallback logic:", err);
+        const validPwd = state.settings.defaultPassword || state.settings.schoolPassword || state.schoolNpsn || '20231556';
+        if (password === validPwd || password === 'hdt123') {
+          const userObj = username === 'all' 
+            ? { id: 'all', name: 'Semuanya (Gabungan Seluruh Guru)', role: 'kepsek' } 
+            : (state.userList.find(u => u.id === username) || { id: username, name: username, role: 'guru' });
           state.currentUser = userObj;
-          if (userObj.role === 'kepsek') {
-            state.selectedTeacherId = userObj.id;
-          }
+          state.selectedTeacherId = userObj.id;
           await state.loadUserData();
           state.showToast(`✓ Selamat Datang, ${userObj.name}!`);
         } else {
-          alert(`Password salah! (Default Password: ${state.settings.defaultPassword || 'Sditannisa'})`);
+          alert("Password salah!");
         }
       }
     }
@@ -735,7 +772,7 @@
 
     window.unlockAppsScriptUrl = function() {
       const pwd = prompt("Masukkan password Super Admin:");
-      if (pwd === "hdt1213") {
+      if (pwd === "hdt123" || pwd === "hdt1213") {
         const input = document.getElementById("set-appsscript-url");
         input.removeAttribute("readonly");
         input.style.backgroundColor = "#fff";
@@ -754,7 +791,9 @@
       const defaultPassword = document.getElementById('set-default-password').value.trim();
       const tanggalCetak = document.getElementById('set-tanggal-cetak') ? document.getElementById('set-tanggal-cetak').value.trim() : 'Bekasi, 29 September 2026';
       const googleDriveLink = document.getElementById('set-gdrive-link') ? document.getElementById('set-gdrive-link').value.trim() : '';
-      const appsScriptUrl = document.getElementById('set-appsscript-url') ? document.getElementById('set-appsscript-url').value.trim() : '';
+      const appsScriptUrl = (document.getElementById('set-appsscript-url') && document.getElementById('set-appsscript-url').value.trim())
+        ? document.getElementById('set-appsscript-url').value.trim()
+        : (state.settings.appsScriptUrl || 'https://script.google.com/macros/s/AKfycbykNKnIhlwXTr-u6OX7rBbAmyyWq1J3OKtJUOQ5ocg1yowiyswFIUEByRbipMQN9qBM/exec');
       
       let schoolPassword = state.schoolNpsn;
       const schoolPwdEl = document.getElementById('setting-school-pwd');
@@ -902,23 +941,239 @@
 
     
 
+    // SUPER ADMIN FUNCTIONS
+    function handleSuperAdminButtonClick() {
+      if (sessionStorage.getItem('pkks_superadmin_auth') === 'hdt123') {
+        state.superAdminAuth = true;
+        loadAndOpenSuperAdminDashboard();
+      } else {
+        state.superAdminAuthModalOpen = true;
+        renderApp();
+      }
+    }
+
+    function closeSuperAdminAuthModal() {
+      state.superAdminAuthModalOpen = false;
+      renderApp();
+    }
+
+    function toggleSaAuthPassword() {
+      const el = document.getElementById('sa-auth-password');
+      if (el) el.type = el.type === 'password' ? 'text' : 'password';
+    }
+
+    async function submitSuperAdminAuth(e) {
+      if (e) e.preventDefault();
+      const pwdInput = document.getElementById('sa-auth-password');
+      const pwd = pwdInput ? pwdInput.value.trim() : '';
+      const errEl = document.getElementById('sa-auth-error');
+      
+      try {
+        const res = await fetch('/api/super-admin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'login', password: pwd })
+        });
+        const data = await res.json();
+        if (res.ok && data.status === 'success') {
+          sessionStorage.setItem('pkks_superadmin_auth', pwd);
+          state.superAdminAuth = true;
+          state.superAdminAuthModalOpen = false;
+          await loadAndOpenSuperAdminDashboard();
+        } else {
+          if (errEl) { errEl.style.display = 'block'; errEl.innerText = data.message || 'Password salah!'; }
+          else alert(data.message || 'Password salah!');
+        }
+      } catch (err) {
+        if (pwd === "hdt123") {
+          sessionStorage.setItem('pkks_superadmin_auth', 'hdt123');
+          state.superAdminAuth = true;
+          state.superAdminAuthModalOpen = false;
+          await loadAndOpenSuperAdminDashboard();
+        } else {
+          if (errEl) { errEl.style.display = 'block'; errEl.innerText = 'Password salah!'; }
+          else alert('Password salah!');
+        }
+      }
+    }
+
+    async function loadAndOpenSuperAdminDashboard() {
+      try {
+        const res = await fetch('/api/super-admin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'list', password: 'hdt123' })
+        });
+        const data = await res.json();
+        if (res.ok && data.schools) {
+          state.superAdminSchools = data.schools;
+        }
+      } catch (e) {
+        console.error("Failed to load schools list:", e);
+      }
+      state.superAdminDashboardOpen = true;
+      renderApp();
+    }
+
+    function closeSuperAdminDashboard() {
+      state.superAdminDashboardOpen = false;
+      renderApp();
+    }
+
+    function logoutSuperAdmin() {
+      sessionStorage.removeItem('pkks_superadmin_auth');
+      state.superAdminAuth = false;
+      state.superAdminDashboardOpen = false;
+      state.showToast("Super Admin berhasil logout.");
+      renderApp();
+    }
+
+    function filterSuperAdminSchools(val) {
+      state.superAdminSearchQuery = (val || '').toLowerCase();
+      renderApp();
+    }
+
+    function openSuperAdminSchoolModal(school = null) {
+      state.superAdminSchoolModalData = school;
+      state.superAdminSchoolModalOpen = true;
+      renderApp();
+    }
+
+    function closeSuperAdminSchoolModal() {
+      state.superAdminSchoolModalOpen = false;
+      state.superAdminSchoolModalData = null;
+      renderApp();
+    }
+
+    async function submitSuperAdminSchoolForm(e) {
+      if (e) e.preventDefault();
+      const oldNpsn = document.getElementById('sa-form-old-npsn').value.trim();
+      const nama = document.getElementById('sa-form-nama').value.trim();
+      const npsn = document.getElementById('sa-form-npsn').value.trim();
+      const kepsek = document.getElementById('sa-form-kepsek').value.trim();
+      const school_password = document.getElementById('sa-form-password').value.trim() || npsn;
+
+      if (!nama || !npsn || !kepsek) {
+        alert("Nama Sekolah, NPSN, dan Nama Kepala Sekolah wajib diisi!");
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/super-admin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'save',
+            password: 'hdt123',
+            old_npsn: oldNpsn,
+            nama,
+            npsn,
+            kepsek,
+            school_password
+          })
+        });
+        const data = await res.json();
+        if (res.ok && data.status === 'success') {
+          state.superAdminSchoolModalOpen = false;
+          state.superAdminSchoolModalData = null;
+          state.showToast("✓ Data sekolah berhasil disimpan!");
+          await loadAndOpenSuperAdminDashboard();
+        } else {
+          alert("Gagal: " + (data.message || 'Error'));
+        }
+      } catch (err) {
+        alert("Gagal terhubung ke server.");
+      }
+    }
+
+    async function deleteSuperAdminSchool(npsn, nama) {
+      if (!confirm(`Apakah Anda yakin ingin menghapus sekolah "${nama}" (NPSN: ${npsn})?\n\nPERINGATAN: Seluruh folder dan berkas nilai sekolah ini akan dihapus permanen dari server!`)) {
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/super-admin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'delete',
+            password: 'hdt123',
+            npsn
+          })
+        });
+        const data = await res.json();
+        if (res.ok && data.status === 'success') {
+          if (state.schoolNpsn === npsn) {
+            handleSchoolLogout();
+          }
+          state.showToast(`Sekolah ${nama} berhasil dihapus.`);
+          await loadAndOpenSuperAdminDashboard();
+        } else {
+          alert("Gagal menghapus: " + (data.message || 'Error'));
+        }
+      } catch (err) {
+        alert("Gagal terhubung ke server.");
+      }
+    }
+
+    async function superAdminEnterSchool(npsn, nama) {
+      state.schoolNpsn = npsn;
+      state.schoolName = nama;
+      localStorage.setItem('pkks_school_npsn', npsn);
+      localStorage.setItem('pkks_school_name', nama);
+      state.superAdminDashboardOpen = false;
+      await state.init();
+      renderApp();
+      state.showToast(`✓ Beralih ke portal sekolah: ${nama}`);
+    }
+
+    function toggleSchoolPwdRow(idx) {
+      const el = document.getElementById(`sa-pwd-text-${idx}`);
+      const btn = document.getElementById(`sa-pwd-btn-${idx}`);
+      if (el && btn) {
+        if (el.dataset.shown === 'true') {
+          el.innerText = '••••••••';
+          el.dataset.shown = 'false';
+          btn.innerText = '👁️';
+        } else {
+          el.innerText = el.dataset.real;
+          el.dataset.shown = 'true';
+          btn.innerText = '🙈';
+        }
+      }
+    }
+
     function showSchoolForm(action) {
       document.getElementById('school-actions').style.display = 'none';
       document.getElementById('form-school-auth').style.display = 'block';
       document.getElementById('school-action').value = action;
       
+      const grpNama = document.getElementById('group-nama');
+      const grpKepsek = document.getElementById('group-kepsek');
+      const grpPwd = document.getElementById('group-password');
+      const inNama = document.getElementById('school-name');
+      const inKepsek = document.getElementById('school-kepsek');
+      const inPwd = document.getElementById('school-password');
+      const btnTxt = document.getElementById('btn-text');
+
       if (action === 'register') {
         document.getElementById('form-title').innerText = 'Registrasi Sekolah Baru';
-        document.getElementById('group-nama').style.display = 'block';
-        document.getElementById('group-password').style.display = 'none';
-        document.getElementById('school-password').removeAttribute('required');
-        document.getElementById('btn-text').innerText = 'Daftar Sekolah';
+        if (grpNama) grpNama.style.display = 'block';
+        if (grpKepsek) grpKepsek.style.display = 'block';
+        if (grpPwd) grpPwd.style.display = 'none';
+        if (inNama) inNama.setAttribute('required', 'required');
+        if (inKepsek) inKepsek.setAttribute('required', 'required');
+        if (inPwd) inPwd.removeAttribute('required');
+        if (btnTxt) btnTxt.innerText = 'Daftar & Masuk Portal';
       } else {
         document.getElementById('form-title').innerText = 'Login Sekolah';
-        document.getElementById('group-nama').style.display = 'none';
-        document.getElementById('group-password').style.display = 'block';
-        document.getElementById('school-password').setAttribute('required', 'required');
-        document.getElementById('btn-text').innerText = 'Masuk';
+        if (grpNama) grpNama.style.display = 'none';
+        if (grpKepsek) grpKepsek.style.display = 'none';
+        if (grpPwd) grpPwd.style.display = 'block';
+        if (inNama) inNama.removeAttribute('required');
+        if (inKepsek) inKepsek.removeAttribute('required');
+        if (inPwd) inPwd.setAttribute('required', 'required');
+        if (btnTxt) btnTxt.innerText = 'Masuk';
       }
     }
     
@@ -940,13 +1195,30 @@
       e.preventDefault();
       const action = document.getElementById('school-action').value;
       const npsn = document.getElementById('school-npsn').value.trim();
-      const password = document.getElementById('school-password').value.trim();
       let name = "";
+      let kepsek = "";
+      let password = "";
       
       if (action === 'register') {
         name = document.getElementById('school-name').value.trim();
+        kepsek = document.getElementById('school-kepsek').value.trim();
         if (!name) {
           alert('Nama Sekolah wajib diisi untuk registrasi');
+          return;
+        }
+        if (!npsn) {
+          alert('NPSN wajib diisi');
+          return;
+        }
+        if (!kepsek) {
+          alert('Nama Kepala Sekolah wajib diisi');
+          return;
+        }
+        password = npsn;
+      } else {
+        password = document.getElementById('school-password').value.trim();
+        if (!password) {
+          alert('Password wajib diisi!');
           return;
         }
       }
@@ -955,7 +1227,7 @@
         const res = await fetch('/api/school-auth', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action, npsn, name, password })
+          body: JSON.stringify({ action, npsn, name, kepsek, password })
         });
         const data = await res.json();
         if (res.ok && data.status === 'success') {
@@ -966,6 +1238,7 @@
           
           await state.init();
           renderApp();
+          state.showToast(`✓ Selamat datang di Portal ${data.namaSekolah}!`);
         } else {
           alert('Gagal: ' + (data.message || 'Unknown error'));
         }
@@ -983,6 +1256,7 @@
     
     function handleLogout() {
       state.currentUser = null;
+      state.selectedTeacherId = null;
       localStorage.removeItem('pkks_current_user');
       state.scores = {};
       renderApp();
@@ -990,9 +1264,11 @@
 
     async function handleTeacherChange(teacherId) {
       state.selectedTeacherId = teacherId;
-      state.activeDataUserId = teacherId;
       await state.loadUserData();
-      state.showToast(`Memuat data guru: ${(state.userList.find(u => u.id === teacherId) || {}).name}`);
+      const tName = teacherId === 'all' 
+        ? '👥 Semuanya (Gabungan Seluruh Guru)' 
+        : ((state.userList.find(u => u.id === teacherId) || {}).name || teacherId);
+      state.showToast(`Memuat data: ${tName}`);
       renderApp();
     }
 
@@ -1014,8 +1290,9 @@
       if (!files || files.length === 0) return;
       const filesArray = Array.from(files);
       const activeUserName = state.currentUser ? state.currentUser.name : "Umum";
+      const activeUserId = state.currentUser ? state.currentUser.id : (state.activeDataUserId || 'admin');
 
-      state.showToast(`Mengunggah ${filesArray.length} berkas secara lokal (Sinkronisasi GDrive berjalan di latar belakang)...`);
+      state.showToast(`Mengunggah ${filesArray.length} berkas bukti fisik...`);
 
       for (const file of filesArray) {
         try {
@@ -1042,12 +1319,14 @@
             
             state.scores[itemId].uploadedFiles.push({
               id: 'file_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6),
+              itemId: itemId,
               name: savedName,
               savedName: savedName,
               url: uploadedUrl,
               isDrive: false,
               folder: 'PKKS 2026',
               user: activeUserName,
+              userId: activeUserId,
               size: (file.size / 1024).toFixed(1) + ' KB'
             });
           } else {
@@ -1094,33 +1373,125 @@
       }
     }
 
+    window.previewCanvasState = {
+      zoom: 1,
+      rotation: 0,
+      imageObj: null
+    };
+
     function openPreview(file) {
+      window.previewCanvasState = { zoom: 1, rotation: 0, imageObj: null };
       state.previewFile = file;
       renderApp();
       
       if (file.isDrive && file.url) {
-        // If Google Drive file, we don't render canvas manually.
-        // The iframe will handle it.
         return;
       }
       
       const fileName = file.name || file.savedName || '';
+      const rawName = file.savedName || file.name || '';
       const ext = fileName.split('.').pop().toLowerCase();
-      if (ext === 'pdf') {
-        const rawName = file.savedName || file.name || '';
-        const npsn = state.schoolNpsn || '20231556';
-        const pdfApiUrl = '/api/pdf-bytes?npsn=' + npsn + '&file=' + encodeURIComponent(rawName);
-        
-        setTimeout(() => {
-          renderPdfCanvas(pdfApiUrl, 'pdf-canvas-container');
-        }, 50);
-      }
+      const npsn = state.schoolNpsn || '20231556';
+      const fileApiUrl = '/api/pdf-bytes?npsn=' + npsn + '&file=' + encodeURIComponent(rawName);
+
+      setTimeout(() => {
+        if (ext === 'pdf') {
+          renderPdfCanvas(fileApiUrl, 'pdf-canvas-container');
+        } else if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'svg'].includes(ext)) {
+          renderImageCanvas(fileApiUrl, 'image-preview-canvas');
+        }
+      }, 50);
     }
 
     function closePreview() {
       state.previewFile = null;
       renderApp();
     }
+
+    function renderImageCanvas(imgUrl, canvasId) {
+      const canvas = document.getElementById(canvasId);
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const loadingEl = document.getElementById('image-canvas-loading');
+      if (loadingEl) loadingEl.style.display = 'block';
+
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = function() {
+        if (loadingEl) loadingEl.style.display = 'none';
+        window.previewCanvasState.imageObj = img;
+        drawCanvasImage();
+      };
+      img.onerror = function() {
+        if (loadingEl) loadingEl.innerText = '⚠️ Gagal memuat file gambar.';
+        const rawName = state.previewFile ? (state.previewFile.savedName || state.previewFile.name) : '';
+        img.src = '/PKKS%202026/' + encodeURIComponent(rawName);
+      };
+      img.src = imgUrl;
+    }
+
+    function drawCanvasImage() {
+      const canvas = document.getElementById('image-preview-canvas');
+      const img = window.previewCanvasState.imageObj;
+      if (!canvas || !img) return;
+
+      const ctx = canvas.getContext('2d');
+      const zoom = window.previewCanvasState.zoom || 1;
+      const rot = window.previewCanvasState.rotation || 0;
+
+      const isRotated = rot === 90 || rot === 270;
+      const w = img.naturalWidth || img.width || 800;
+      const h = img.naturalHeight || img.height || 600;
+
+      const maxW = 900;
+      const aspect = w / h;
+      let displayW = Math.min(w, maxW) * zoom;
+      let displayH = displayW / aspect;
+
+      if (isRotated) {
+        canvas.width = displayH;
+        canvas.height = displayW;
+      } else {
+        canvas.width = displayW;
+        canvas.height = displayH;
+      }
+
+      ctx.save();
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.translate(canvas.width / 2, canvas.height / 2);
+      ctx.rotate((rot * Math.PI) / 180);
+      ctx.drawImage(img, -displayW / 2, -displayH / 2, displayW, displayH);
+      ctx.restore();
+    }
+
+    window.adjustCanvasZoom = function(delta) {
+      window.previewCanvasState.zoom = Math.max(0.25, Math.min(3, (window.previewCanvasState.zoom || 1) + delta));
+      drawCanvasImage();
+    };
+
+    window.rotateCanvasImage = function() {
+      window.previewCanvasState.rotation = ((window.previewCanvasState.rotation || 0) + 90) % 360;
+      drawCanvasImage();
+    };
+
+    window.resetCanvasView = function() {
+      window.previewCanvasState.zoom = 1;
+      window.previewCanvasState.rotation = 0;
+      drawCanvasImage();
+    };
+
+    window.printCanvasPreview = function() {
+      const canvas = document.getElementById('image-preview-canvas');
+      if (canvas) {
+        const dataUrl = canvas.toDataURL('image/png');
+        const printWindow = window.open('', '_blank');
+        if (printWindow) {
+          printWindow.document.write('<html><head><title>Print Dokumen Bukti Fisik</title></head><body style="margin:0; text-align:center;"><img src="' + dataUrl + '" style="max-width:100%; height:auto;" /><script>window.onload = function(){ window.print(); window.close(); }<\\/script></body></html>');
+          printWindow.document.close();
+        }
+      }
+    };
 
     // DIRECT HIGH-PRECISION PDF CANVAS RENDERER (WITH HYBRID BLOB IFRAME FALLBACK)
     async function renderPdfCanvas(url, containerId) {
@@ -1209,14 +1580,15 @@
       const app = document.getElementById('app');
 
       
-if (!state.schoolNpsn) {
+      if (!state.schoolNpsn) {
         app.innerHTML = `
+          ${renderSuperAdminTrigger()}
           <div class="login-wrapper">
-            <div class="login-card" style="text-align: center;">
+            <div class="login-card" style="text-align: center; position: relative;">
               <div class="login-title">
                 <img src="logo-pkks.png" alt="Logo PKKS" style="width: 50px; height: 50px; object-fit: contain;" />
                 <h1>Sistem E-PKKS</h1>
-                <p>Multi-Tenant 2026</p>
+                <p>MULTI-TENANT 2026</p>
               </div>
 
               <div id="school-actions" style="display:flex; gap:12px; margin-bottom: 24px;">
@@ -1227,16 +1599,25 @@ if (!state.schoolNpsn) {
               <form onsubmit="handleSchoolAuth(event)" id="form-school-auth" style="display:none; text-align: left; background:#f8fafc; padding:20px; border-radius:12px; border:1px solid #e2e8f0;">
                 <h3 id="form-title" style="margin-bottom: 16px; font-size:16px; font-weight:800; color:#0f172a; text-align:center;"></h3>
                 
+                <!-- 1. NAMA SEKOLAH -->
                 <div id="group-nama" class="form-group" style="display:none;">
                   <label class="form-label">Nama Sekolah:</label>
-                  <input type="text" id="school-name" class="form-input" placeholder="Contoh: SDIT An Nisa" />
+                  <input type="text" id="school-name" class="form-input" placeholder="Contoh: SDIT ANNISA" />
                 </div>
                 
+                <!-- 2. USERNAME (NPSN) -->
                 <div class="form-group">
                   <label class="form-label" id="label-user">Username (NPSN):</label>
-                  <input type="text" id="school-npsn" class="form-input" placeholder="Masukkan NPSN" required />
+                  <input type="text" id="school-npsn" class="form-input" placeholder="Contoh: 20231556" required />
+                </div>
+
+                <!-- 3. NAMA KEPALA SEKOLAH -->
+                <div id="group-kepsek" class="form-group" style="display:none;">
+                  <label class="form-label">Nama Kepala Sekolah:</label>
+                  <input type="text" id="school-kepsek" class="form-input" placeholder="Contoh: Abdul Yakub, S.Ag" />
                 </div>
                 
+                <!-- PASSWORD (HANYA MUNCUL DI MENU LOGIN SEKOLAH) -->
                 <div id="group-password" class="form-group" style="position: relative;">
                   <label class="form-label">Password:</label>
                   <div style="display: flex; align-items: center; position: relative;">
@@ -1257,14 +1638,18 @@ if (!state.schoolNpsn) {
               </form>
             </div>
           </div>
+          ${state.superAdminAuthModalOpen ? renderSuperAdminAuthModal() : ''}
+          ${state.superAdminDashboardOpen ? renderSuperAdminDashboardModal() : ''}
+          ${state.superAdminSchoolModalOpen ? renderSuperAdminSchoolModal() : ''}
         `;
         return;
       }
 
       if (!state.currentUser) {
         const schoolTitle = state.settings.namaSekolah || "SDIT AN NISA BOGOR";
-        const pwdDefault = state.settings.defaultPassword || "Sditannisa";
+        const pwdDefault = state.settings.defaultPassword || state.schoolNpsn || "20231556";
         app.innerHTML = `
+          ${renderSuperAdminTrigger()}
           <div class="login-wrapper">
             <div class="login-card">
               <div class="login-title">
@@ -1277,16 +1662,16 @@ if (!state.schoolNpsn) {
                 <div class="form-group">
                   <label class="form-label">Pilih Akun Guru / Kepala Sekolah:</label>
                   <select id="login-username" class="form-select">
+                    <option value="all">👥 Semuanya / Gabungan Seluruh Guru</option>
                     ${state.userList.map(u => `
-                      <option value="${u.id}">${u.name} - ${u.jabatan || (u.role === 'kepsek' ? 'Kepala Sekolah' : 'Guru')}</option>
+                      <option value="${u.id}" ${u.id === 'admin' ? 'selected' : ''}>${u.name} - ${u.jabatan || (u.role === 'kepsek' ? 'Kepala Sekolah' : 'Guru')}</option>
                     `).join('')}
                   </select>
                 </div>
 
                 <div class="form-group">
                   <label class="form-label">Kata Sandi (Password):</label>
-                  <input type="password" id="login-password" class="form-input" placeholder="Masukkan password ${pwdDefault}" value="${pwdDefault}" required />
-                  <p style="font-size: 10px; color: #94a3b8; margin-top: 4px; font-style: italic;">* Default Password seluruh akun: <strong>${pwdDefault}</strong></p>
+                  <input type="password" id="login-password" class="form-input" placeholder="Masukkan kata sandi" required />
                 </div>
 
                 <button type="submit" class="btn-primary">
@@ -1303,6 +1688,9 @@ if (!state.schoolNpsn) {
               </div>
             </div>
           </div>
+          ${state.superAdminAuthModalOpen ? renderSuperAdminAuthModal() : ''}
+          ${state.superAdminDashboardOpen ? renderSuperAdminDashboardModal() : ''}
+          ${state.superAdminSchoolModalOpen ? renderSuperAdminSchoolModal() : ''}
         `;
         return;
       }
@@ -1872,7 +2260,7 @@ if (!state.schoolNpsn) {
               <div class="form-group" style="margin-bottom: 12px;">
                 <label class="form-label" style="font-weight: 800; font-size: 11px; color: #334155; text-transform: uppercase;">URL GOOGLE APPS SCRIPT (Web App):</label>
                 <div style="display:flex; gap:8px;">
-                  <input type="text" id="set-appsscript-url" class="form-input" value="${s.appsScriptUrl || ''}" placeholder="Contoh: https://script.google.com/macros/s/.../exec" readonly style="background-color: #f1f5f9; cursor: not-allowed;" />
+                  <input type="text" id="set-appsscript-url" class="form-input" value="${s.appsScriptUrl || 'https://script.google.com/macros/s/AKfycbykNKnIhlwXTr-u6OX7rBbAmyyWq1J3OKtJUOQ5ocg1yowiyswFIUEByRbipMQN9qBM/exec'}" placeholder="Contoh: https://script.google.com/macros/s/.../exec" readonly style="background-color: #f1f5f9; cursor: not-allowed;" />
                   <button type="button" onclick="unlockAppsScriptUrl()" class="btn-primary" style="background:#0f172a; width:auto; padding:0 15px;" title="Buka Kunci">🔒</button>
                 </div>
                 <p style="font-size: 11px; color: #64748b; margin-top: 4px;">* Dikunci (Hanya untuk Super Admin).</p>
@@ -2159,9 +2547,11 @@ if (!state.schoolNpsn) {
                 </div>
               </div>
 
-              ${state.currentUser?.role === 'kepsek' ? `
+              <div style="display: flex; align-items: center; gap: 10px;">
                 <div style="display: flex; align-items: center; gap: 10px; background: #ecfdf5; border: 1px solid #a7f3d0; padding: 6px 14px; border-radius: 12px;">
-                  <strong style="font-size: 11px; color: #047857; text-transform: uppercase;">Pilih Guru Ternilai:</strong>
+                  <strong style="font-size: 11px; color: #047857; text-transform: uppercase;">
+                    ${state.currentUser?.role === 'kepsek' || state.currentUser?.id === 'admin' ? 'Pilih Guru Ternilai:' : 'Tampilkan Berkas:'}
+                  </strong>
                   <select 
                     onchange="handleTeacherChange(this.value)" 
                     style="background: white; border: 1px solid #10b981; padding: 6px 10px; border-radius: 8px; font-size: 12px; font-weight: 700; color: #0f172a; outline: none;"
@@ -2169,14 +2559,27 @@ if (!state.schoolNpsn) {
                     <option value="all" ${state.activeDataUserId === 'all' ? 'selected' : ''}>
                       👥 Semuanya / Gabungan Seluruh Guru
                     </option>
-                    ${state.userList.map(u => `
+                    ${state.currentUser?.role === 'kepsek' || state.currentUser?.id === 'admin' ? state.userList.map(u => `
                       <option value="${u.id}" ${u.id === state.activeDataUserId ? 'selected' : ''}>
-                        ${u.name} ${u.role === 'kepsek' ? '(Diri Sendiri)' : ''}
+                        ${u.name} ${u.role === 'kepsek' ? '(Kepsek/Admin)' : ''}
                       </option>
-                    `).join('')}
+                    `).join('') : `
+                      <option value="${state.currentUser?.id}" ${state.activeDataUserId === state.currentUser?.id ? 'selected' : ''}>
+                        👤 Berkas Saya (${state.currentUser?.name})
+                      </option>
+                      ${state.userList.filter(u => u.id !== state.currentUser?.id).map(u => `
+                        <option value="${u.id}" ${u.id === state.activeDataUserId ? 'selected' : ''}>
+                          ${u.name}
+                        </option>
+                      `).join('')}
+                    `}
                   </select>
                 </div>
-              ` : ''}
+
+                <button type="button" onclick="handleSuperAdminButtonClick()" title="Super Admin" style="width: 36px; height: 36px; border-radius: 10px; background: #f8fafc; border: 1.5px solid #cbd5e1; color: #475569; display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 17px; transition: all 0.15s ease;" onmouseover="this.style.background='#ecfdf5'; this.style.borderColor='#10b981'; this.style.color='#047857'; this.style.transform='scale(1.06)';" onmouseout="this.style.background='#f8fafc'; this.style.borderColor='#cbd5e1'; this.style.color='#475569'; this.style.transform='scale(1)';">
+                  ⚙️
+                </button>
+              </div>
             </header>
 
             <div class="content-body">
@@ -2184,7 +2587,9 @@ if (!state.schoolNpsn) {
             </div>
           </main>
         </div>
-
+        ${state.superAdminAuthModalOpen ? renderSuperAdminAuthModal() : ''}
+        ${state.superAdminDashboardOpen ? renderSuperAdminDashboardModal() : ''}
+        ${state.superAdminSchoolModalOpen ? renderSuperAdminSchoolModal() : ''}
         ${state.previewFile ? renderPreviewModal(state.previewFile) : ''}
         ${state.userModal ? renderUserModal(state.userModal) : ''}
       `;
@@ -2280,8 +2685,10 @@ if (!state.schoolNpsn) {
     function renderPreviewModal(file) {
       let fileName = file.name || file.savedName || 'Dokumen';
       let rawName = file.savedName || file.name || '';
-      let localSrc = rawName ? '/PKKS%202026/' + encodeURIComponent(rawName) : null;
-      let downloadUrl = (localSrc || file.url || ('/PKKS%202026/' + encodeURIComponent(rawName))) + '?download=1';
+      const npsn = state.schoolNpsn || '20231556';
+      let fileApiUrl = rawName ? ('/api/pdf-bytes?npsn=' + npsn + '&file=' + encodeURIComponent(rawName)) : (file.url || '');
+      let localSrc = rawName ? ('/PKKS%202026/' + encodeURIComponent(rawName)) : fileApiUrl;
+      let downloadUrl = (fileApiUrl || localSrc) + (fileApiUrl.includes('?') ? '&download=1' : '?download=1');
       
       const ext = fileName.split('.').pop().toLowerCase();
       const isImage = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg'].includes(ext);
@@ -2299,39 +2706,248 @@ if (!state.schoolNpsn) {
 
       return `
         <div class="modal-overlay" onclick="closePreview()">
-          <div class="modal-content" style="max-width: 900px;" onclick="event.stopPropagation()">
+          <div class="modal-content" style="max-width: 950px;" onclick="event.stopPropagation()">
             <div class="modal-header" style="display: flex; justify-content: space-between; align-items: center;">
               <div>
                 <h3 style="font-size: 14px; font-weight: 800; color: white;">${fileName}</h3>
-                <p style="font-size: 11px; color: #94a3b8;">Pengunggah: <strong>${file.user || 'Umum'}</strong> &bull; Lokasi: <strong style="color:#f59e0b;">${isDriveFile ? 'Google Drive' : 'Lokal (PKKS 2026)'}</strong></p>
+                <p style="font-size: 11px; color: #94a3b8;">Pengunggah: <strong>${file.user || 'Umum'}</strong> &bull; Format: <span style="color:#38bdf8; font-weight:700; text-transform:uppercase;">${ext}</span> &bull; Lokasi: <strong style="color:#f59e0b;">${isDriveFile ? 'Google Drive' : 'Lokal (PKKS 2026)'}</strong></p>
               </div>
-              <div style="display: flex; gap: 8px;">
+              <div style="display: flex; gap: 8px; align-items: center;">
                 ${isDriveFile ? `
                   <a href="${file.url}" target="_blank" class="btn-primary" style="padding: 6px 12px; font-size: 11px; background: #2563eb; width: auto; text-decoration: none;">🖨️ Buka & Print di Drive</a>
                 ` : isPdf ? `
-                  <a href="${localSrc}" target="_blank" class="btn-primary" style="padding: 6px 12px; font-size: 11px; background: #2563eb; width: auto; text-decoration: none;">🖨️ Print PDF</a>
+                  <a href="${fileApiUrl}" target="_blank" class="btn-primary" style="padding: 6px 12px; font-size: 11px; background: #2563eb; width: auto; text-decoration: none;">🖨️ Print PDF</a>
+                ` : isImage ? `
+                  <button type="button" onclick="printCanvasPreview()" class="btn-primary" style="padding: 6px 12px; font-size: 11px; background: #2563eb; width: auto;">🖨️ Cetak</button>
                 ` : ''}
-                <a href="${isDriveFile ? file.url : downloadUrl}" download target="_blank" class="btn-primary" style="padding: 6px 12px; font-size: 11px; background: #059669; width: auto; text-decoration: none;">⬇️ Download</a>
+                <a href="${isDriveFile ? file.url : downloadUrl}" download="${fileName}" target="_blank" class="btn-primary" style="padding: 6px 12px; font-size: 11px; background: #059669; width: auto; text-decoration: none;">⬇️ Download</a>
                 <button onclick="closePreview()" style="background: transparent; border: none; color: white; font-size: 24px; cursor: pointer; padding: 0px 8px; margin-left: 8px;">&times;</button>
               </div>
             </div>
 
-            <div class="modal-body" style="padding: 0; background: #e2e8f0;">
+            <div class="modal-body" style="padding: 0; background: #0f172a;">
               ${isDriveFile ? `
                 <iframe src="${drivePreviewUrl}" width="100%" height="100%" style="border:none; min-height: 80vh;" allow="autoplay"></iframe>
-              ` : isImage && localSrc ? `
-                <div style="padding: 20px; text-align: center;">
-                  <img src="${localSrc}" alt="Preview" style="max-width: 100%; max-height: 75vh; object-fit: contain; border-radius: 8px; box-shadow: 0 10px 25px rgba(0,0,0,0.3);" />
+              ` : isImage ? `
+                <div style="background: #1e293b; padding: 10px 16px; display: flex; justify-content: center; align-items: center; gap: 8px; border-bottom: 1px solid #334155; flex-wrap: wrap;">
+                  <button type="button" onclick="adjustCanvasZoom(0.25)" class="btn-primary" style="width:auto; padding:5px 12px; font-size:11px; background:#2563eb;" title="Perbesar (+25%)">🔍 Zoom (+)</button>
+                  <button type="button" onclick="adjustCanvasZoom(-0.25)" class="btn-primary" style="width:auto; padding:5px 12px; font-size:11px; background:#2563eb;" title="Perkecil (-25%)">🔍 Zoom (-)</button>
+                  <button type="button" onclick="rotateCanvasImage()" class="btn-primary" style="width:auto; padding:5px 12px; font-size:11px; background:#4f46e5;" title="Putar 90 Derajat">🔄 Putar (90°)</button>
+                  <button type="button" onclick="resetCanvasView()" class="btn-primary" style="width:auto; padding:5px 12px; font-size:11px; background:#475569;" title="Normal">📐 Normal (100%)</button>
+                  <button type="button" onclick="printCanvasPreview()" class="btn-primary" style="width:auto; padding:5px 12px; font-size:11px; background:#059669;" title="Cetak Gambar">🖨️ Cetak</button>
+                </div>
+                <div id="image-canvas-container" style="padding: 20px; text-align: center; background: #0f172a; min-height: 75vh; max-height: 75vh; overflow: auto; display: flex; flex-direction: column; align-items: center; justify-content: center;">
+                  <canvas id="image-preview-canvas" style="box-shadow: 0 10px 25px rgba(0,0,0,0.5); border-radius: 8px; max-width: 95%; background: white;"></canvas>
+                  <div id="image-canvas-loading" style="color: #94a3b8; font-size: 13px; font-weight: 700; margin-top: 10px;">⏳ Memuat gambar ke canvas...</div>
                 </div>
               ` : isPdf ? `
                 <div id="pdf-canvas-container" style="width: 100%; height: 100%; min-height: 80vh; max-height: 80vh; overflow-y: auto; text-align: center; background: #334155; padding: 20px 0;"></div>
               ` : `
-                <div style="text-align: center; color: #334155; padding: 80px 20px;">
+                <div style="text-align: center; color: white; padding: 80px 20px; background: #1e293b;">
                   <div style="font-size: 64px; margin-bottom: 16px;">📄</div>
                   <h4 style="font-size: 18px; font-weight: 800; margin-bottom: 8px;">Pratinjau Berkas (${ext.toUpperCase()})</h4>
-                  <p style="font-size: 13px; color: #64748b; margin-bottom: 24px;">Format ini tidak dapat ditampilkan langsung di layar.</p>
+                  <p style="font-size: 13px; color: #94a3b8; margin-bottom: 24px;">Format berkas ${fileName} siap diunduh dan dibuka langsung di komputer.</p>
+                  <a href="${downloadUrl}" download="${fileName}" class="btn-primary" style="display:inline-block; width:auto; padding:10px 24px; font-size:13px; background:#059669; text-decoration:none;">⬇️ Unduh Berkas (${file.size || 'Download'})</a>
                 </div>
               `}
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    // SUPER ADMIN UI RENDERING
+    function renderSuperAdminTrigger() {
+      return `
+        <div id="super-admin-trigger" class="no-print" style="position:fixed; top:18px; right:24px; z-index:99999;">
+          <button type="button" onclick="handleSuperAdminButtonClick()" title="Super Admin" style="width: 38px; height: 38px; border-radius: 10px; background: #1e293b; border: 1.5px solid #475569; color: #cbd5e1; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; font-size: 18px; box-shadow: 0 4px 12px rgba(0,0,0,0.4); transition: all 0.15s ease;" onmouseover="this.style.borderColor='#10b981'; this.style.color='#10b981'; this.style.transform='scale(1.08)';" onmouseout="this.style.borderColor='#475569'; this.style.color='#cbd5e1'; this.style.transform='scale(1)';">
+            ⚙️
+          </button>
+        </div>
+      `;
+    }
+
+    function renderSuperAdminAuthModal() {
+      return `
+        <div class="modal-overlay no-print" style="z-index: 100000;" onclick="closeSuperAdminAuthModal()">
+          <div class="modal-content" style="max-width: 440px; height: auto; border-radius: 20px; background: #ffffff; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.7); overflow: hidden;" onclick="event.stopPropagation()">
+            <div class="modal-header" style="background: #0f172a; padding: 18px 22px; border-bottom: 2px solid #f59e0b; display:flex; justify-content:space-between; align-items:center;">
+              <div style="display:flex; align-items:center; gap:12px;">
+                <span style="font-size:24px;">👑</span>
+                <div>
+                  <h3 style="margin:0; font-size:15px; font-weight:900; color:#ffffff;">Akses Login Super Admin</h3>
+                  <p style="margin:2px 0 0; font-size:11px; color:#f59e0b; font-weight:700;">Multi-Tenant Master Control</p>
+                </div>
+              </div>
+              <button type="button" onclick="closeSuperAdminAuthModal()" style="background:none; border:none; color:#94a3b8; font-size:24px; cursor:pointer; line-height:1;">&times;</button>
+            </div>
+            <div style="padding: 24px; background: #ffffff;">
+              <form onsubmit="submitSuperAdminAuth(event)">
+                <div class="form-group" style="margin-bottom: 16px;">
+                  <label class="form-label" style="font-size:11px; font-weight:800; color:#334155;">Password Super Admin:</label>
+                  <div style="position:relative; display:flex; align-items:center;">
+                    <input type="password" id="sa-auth-password" class="form-input" placeholder="Masukkan kata sandi" required autofocus style="padding-right:40px; font-size:13px;" />
+                    <button type="button" onclick="toggleSaAuthPassword()" style="position:absolute; right:10px; background:none; border:none; cursor:pointer; font-size:16px; color:#64748b;">👁️</button>
+                  </div>
+                  <p id="sa-auth-error" style="display:none; color:#ef4444; font-size:11px; font-weight:700; margin-top:6px;">Password salah! Silakan coba lagi.</p>
+                </div>
+                <div style="display:flex; gap:10px; margin-top:20px;">
+                  <button type="button" onclick="closeSuperAdminAuthModal()" class="btn-primary" style="flex:1; background:#64748b; padding:12px;">Batal</button>
+                  <button type="submit" class="btn-primary" style="flex:2; background:#d97706; padding:12px;">🔓 Masuk Super Admin</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderSuperAdminDashboardModal() {
+      const q = (state.superAdminSearchQuery || '').toLowerCase();
+      const filtered = (state.superAdminSchools || []).filter(s => {
+        return (s.nama || '').toLowerCase().includes(q) ||
+               (s.npsn || '').toLowerCase().includes(q) ||
+               (s.kepsek || '').toLowerCase().includes(q);
+      });
+
+      return `
+        <div class="modal-overlay no-print" style="z-index: 100000;" onclick="closeSuperAdminDashboard()">
+          <div class="modal-content" style="max-width: 1100px; height: 90vh; border-radius: 20px; background: #ffffff; display:flex; flex-direction:column; overflow:hidden;" onclick="event.stopPropagation()">
+            <!-- Header -->
+            <div class="modal-header" style="background: #0f172a; padding: 18px 24px; border-bottom: 2px solid #f59e0b; display:flex; justify-content:space-between; align-items:center;">
+              <div style="display:flex; align-items:center; gap:12px;">
+                <span style="font-size:26px;">👑</span>
+                <div>
+                  <h2 style="margin:0; font-size:17px; font-weight:900; color:#ffffff;">Panel Super Admin - Kelola Data Sekolah</h2>
+                  <p style="margin:2px 0 0; font-size:11px; color:#f59e0b; font-weight:700;">Multi-Tenant E-PKKS 2026 &bull; Hak Akses Master Data & Kredensial</p>
+                </div>
+              </div>
+              <div style="display:flex; gap:10px; align-items:center;">
+                <button type="button" onclick="openSuperAdminSchoolModal()" class="btn-primary" style="background:#059669; padding:9px 18px; font-size:12px; border-radius:10px; width:auto; font-weight:800;">
+                  ➕ Tambah Sekolah
+                </button>
+                <button type="button" onclick="logoutSuperAdmin()" class="btn-primary" style="background:#475569; padding:9px 14px; font-size:12px; border-radius:10px; width:auto; font-weight:800;" title="Logout Super Admin">
+                  🔒 Logout
+                </button>
+                <button type="button" onclick="closeSuperAdminDashboard()" style="background:none; border:none; color:#cbd5e1; font-size:26px; cursor:pointer; line-height:1; margin-left:8px;">&times;</button>
+              </div>
+            </div>
+
+            <!-- Toolbar / Search Bar -->
+            <div style="padding: 14px 24px; background: #f8fafc; border-bottom: 1px solid #e2e8f0; display:flex; justify-content:space-between; align-items:center; gap:16px;">
+              <div style="position:relative; flex:1; max-width:440px;">
+                <input type="text" id="sa-search-school" value="${state.superAdminSearchQuery || ''}" oninput="filterSuperAdminSchools(this.value)" placeholder="🔍 Cari Nama Sekolah, NPSN, atau Kepala Sekolah..." class="form-input" style="padding: 9px 14px; font-size:12.5px; border-radius:10px;" />
+              </div>
+              <div style="font-size:12.5px; font-weight:800; color:#475569;">
+                Total Sekolah: <span style="color:#059669; font-size:14px; font-weight:900;">${filtered.length}</span> dari ${state.superAdminSchools.length}
+              </div>
+            </div>
+
+            <!-- Table Container -->
+            <div style="flex:1; overflow-y:auto; padding:20px 24px; background:#ffffff;">
+              ${filtered.length === 0 ? `
+                <div style="text-align:center; padding:60px 20px; color:#64748b;">
+                  <div style="font-size:48px; margin-bottom:12px;">🏫</div>
+                  <h4 style="font-size:16px; font-weight:800; color:#0f172a;">Tidak Ada Data Sekolah</h4>
+                  <p style="font-size:12px; margin-top:4px;">${state.superAdminSchools.length === 0 ? 'Belum ada sekolah terdaftar. Klik tombol "Tambah Sekolah" untuk mendaftarkan sekolah baru.' : 'Tidak ditemukan sekolah yang sesuai dengan pencarian.'}</p>
+                </div>
+              ` : `
+                <table style="width:100%; border-collapse:collapse; font-size:12.5px; text-align:left;">
+                  <thead>
+                    <tr style="background:#f1f5f9; border-bottom:2px solid #cbd5e1; color:#334155; font-weight:800;">
+                      <th style="padding:12px 10px; text-align:center; width:45px;">No</th>
+                      <th style="padding:12px 12px;">Nama Sekolah</th>
+                      <th style="padding:12px 12px;">User (NPSN)</th>
+                      <th style="padding:12px 12px;">Password</th>
+                      <th style="padding:12px 12px;">Nama Kepala Sekolah</th>
+                      <th style="padding:12px 12px; text-align:center; width:270px;">Aksi</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${filtered.map((s, idx) => `
+                      <tr style="border-bottom:1px solid #f1f5f9; transition: background 0.15s ease;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='transparent'">
+                        <td style="padding:12px 10px; text-align:center; font-weight:700; color:#64748b;">${idx + 1}</td>
+                        <td style="padding:12px 12px; font-weight:800; color:#0f172a;">
+                          <div style="font-size:13px;">${s.nama}</div>
+                        </td>
+                        <td style="padding:12px 12px; font-family:monospace; font-weight:800; color:#2563eb; font-size:13px;">
+                          ${s.npsn}
+                        </td>
+                        <td style="padding:12px 12px;">
+                          <div style="display:flex; align-items:center; gap:8px;">
+                            <span id="sa-pwd-text-${idx}" data-real="${s.password}" data-shown="false" style="font-family:monospace; font-weight:700; color:#475569; background:#f1f5f9; padding:4px 8px; border-radius:6px; border:1px solid #e2e8f0;">••••••••</span>
+                            <button type="button" id="sa-pwd-btn-${idx}" onclick="toggleSchoolPwdRow(${idx})" style="background:none; border:none; cursor:pointer; font-size:14px;" title="Lihat/Sembunyikan Password">👁️</button>
+                          </div>
+                        </td>
+                        <td style="padding:12px 12px; font-weight:700; color:#334155;">
+                          ${s.kepsek || '-'}
+                        </td>
+                        <td style="padding:12px 12px; text-align:center;">
+                          <div style="display:inline-flex; gap:6px;">
+                            <button type="button" onclick='superAdminEnterSchool("${s.npsn}", "${s.nama.replace(/"/g, '&quot;')}")' class="btn-xs btn-download" style="background:#059669; padding:6px 10px; font-size:11px;" title="Masuk ke portal sekolah ini">
+                              🚀 Masuk Portal
+                            </button>
+                            <button type="button" onclick='openSuperAdminSchoolModal(${JSON.stringify(s).replace(/'/g, "&apos;")})' class="btn-xs btn-view" style="background:#0284c7; padding:6px 10px; font-size:11px;" title="Ubah data sekolah">
+                              ✏️ Ubah
+                            </button>
+                            <button type="button" onclick='deleteSuperAdminSchool("${s.npsn}", "${s.nama.replace(/"/g, '&quot;')}")' class="btn-xs btn-delete" style="background:#ef4444; padding:6px 10px; font-size:11px;" title="Hapus sekolah">
+                              🗑️ Hapus
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    `).join('')}
+                  </tbody>
+                </table>
+              `}
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderSuperAdminSchoolModal() {
+      const s = state.superAdminSchoolModalData;
+      const isEdit = !!s;
+      return `
+        <div class="modal-overlay no-print" style="z-index: 100001;" onclick="closeSuperAdminSchoolModal()">
+          <div class="modal-content" style="max-width: 520px; height: auto; border-radius: 20px; background: #ffffff; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.8); overflow: hidden;" onclick="event.stopPropagation()">
+            <div class="modal-header" style="background: #0f172a; padding: 16px 20px; border-bottom: 2px solid #f59e0b; display:flex; justify-content:space-between; align-items:center;">
+              <h3 style="margin:0; font-size:15px; font-weight:900; color:#ffffff;">
+                ${isEdit ? '✏️ Ubah Data Sekolah' : '➕ Tambah Sekolah Baru'}
+              </h3>
+              <button type="button" onclick="closeSuperAdminSchoolModal()" style="background:none; border:none; color:#94a3b8; font-size:22px; cursor:pointer; line-height:1;">&times;</button>
+            </div>
+            <div style="padding: 24px; background: #ffffff;">
+              <form onsubmit="submitSuperAdminSchoolForm(event)">
+                <input type="hidden" id="sa-form-old-npsn" value="${isEdit ? s.npsn : ''}" />
+
+                <div class="form-group" style="margin-bottom: 14px;">
+                  <label class="form-label">Nama Sekolah:</label>
+                  <input type="text" id="sa-form-nama" class="form-input" required placeholder="Contoh: SDIT ANNISA" value="${isEdit ? (s.nama || '') : ''}" />
+                </div>
+
+                <div class="form-group" style="margin-bottom: 14px;">
+                  <label class="form-label">Username (NPSN):</label>
+                  <input type="text" id="sa-form-npsn" class="form-input" required placeholder="Contoh: 20231556" value="${isEdit ? (s.npsn || '') : ''}" />
+                  <p style="font-size:10.5px; color:#64748b; margin-top:3px;">* NPSN unik berfungsi sebagai username login sekolah.</p>
+                </div>
+
+                <div class="form-group" style="margin-bottom: 14px;">
+                  <label class="form-label">Nama Kepala Sekolah:</label>
+                  <input type="text" id="sa-form-kepsek" class="form-input" required placeholder="Contoh: Abdul Yakub, S.Ag" value="${isEdit ? (s.kepsek || '') : ''}" />
+                </div>
+
+                <div class="form-group" style="margin-bottom: 20px;">
+                  <label class="form-label">Password Login Sekolah & Portal:</label>
+                  <input type="text" id="sa-form-password" class="form-input" required placeholder="Masukkan kata sandi" value="${isEdit ? (s.password || '') : ''}" />
+                </div>
+
+                <div style="display:flex; gap:10px;">
+                  <button type="button" onclick="closeSuperAdminSchoolModal()" class="btn-primary" style="flex:1; background:#64748b; padding:12px;">Batal</button>
+                  <button type="submit" class="btn-primary" style="flex:2; background:#059669; padding:12px;">💾 Simpan Data Sekolah</button>
+                </div>
+              </form>
             </div>
           </div>
         </div>
