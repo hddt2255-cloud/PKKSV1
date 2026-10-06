@@ -340,6 +340,92 @@
 
     const PERMANENT_APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbykNKnIhlwXTr-u6OX7rBbAmyyWq1J3OKtJUOQ5ocg1yowiyswFIUEByRbipMQN9qBM/exec";
 
+    // ULTRA-FAST INDEXEDDB BINARY STORAGE (Zero Memory Overhead, No Quota Crashes)
+    const PkksFileDB = {
+      dbPromise: null,
+      getDb() {
+        if (!this.dbPromise) {
+          this.dbPromise = new Promise((resolve, reject) => {
+            const req = indexedDB.open('pkks_files_db', 1);
+            req.onupgradeneeded = (e) => {
+              const db = e.target.result;
+              if (!db.objectStoreNames.contains('files')) {
+                db.createObjectStore('files', { keyPath: 'id' });
+              }
+            };
+            req.onsuccess = (e) => resolve(e.target.result);
+            req.onerror = (e) => reject(e.target.error);
+          });
+        }
+        return this.dbPromise;
+      },
+      async set(id, blobOrFile) {
+        try {
+          const db = await this.getDb();
+          return new Promise((resolve, reject) => {
+            const tx = db.transaction('files', 'readwrite');
+            tx.objectStore('files').put({ id, data: blobOrFile, time: Date.now() });
+            tx.oncomplete = () => resolve(true);
+            tx.onerror = () => reject(tx.error);
+          });
+        } catch(e) {
+          console.warn("IndexedDB set error:", e);
+          return false;
+        }
+      },
+      async get(id) {
+        try {
+          const db = await this.getDb();
+          return new Promise((resolve) => {
+            const tx = db.transaction('files', 'readonly');
+            const req = tx.objectStore('files').get(id);
+            req.onsuccess = () => resolve(req.result ? req.result.data : null);
+            req.onerror = () => resolve(null);
+          });
+        } catch(e) {
+          return null;
+        }
+      },
+      async delete(id) {
+        try {
+          const db = await this.getDb();
+          return new Promise((resolve) => {
+            const tx = db.transaction('files', 'readwrite');
+            tx.objectStore('files').delete(id);
+            tx.oncomplete = () => resolve(true);
+            tx.onerror = () => resolve(false);
+          });
+        } catch(e) {
+          return false;
+        }
+      }
+    };
+
+    function uploadFileToGDriveBackground(file, filename, userName, folderId, appsScriptUrl) {
+      const reader = new FileReader();
+      reader.onload = function() {
+        try {
+          const resultStr = String(reader.result || '');
+          const b64 = resultStr.includes(',') ? resultStr.split(',')[1] : resultStr;
+          const p = new URLSearchParams();
+          p.append('filename', filename);
+          p.append('mimeType', file.type || 'application/octet-stream');
+          p.append('file', b64);
+          p.append('user', userName);
+          p.append('folderId', folderId);
+          originalFetch(appsScriptUrl, {
+            method: 'POST',
+            mode: 'no-cors',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: p
+          }).then(() => {
+            console.log("Background Google Drive upload finished for:", filename);
+          }).catch(e => console.warn('GDrive sync notice:', e));
+        } catch(e) {}
+      };
+      reader.readAsDataURL(file);
+    }
+
     function getSchoolsDb() {
       try {
         const raw = localStorage.getItem('pkks_schools_db');
@@ -487,7 +573,23 @@
       const uDataKey = `pkks_data_${npsn}_${userId}`;
       try {
         const raw = localStorage.getItem(uDataKey);
-        if (raw) return JSON.parse(raw);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          // Scrub any legacy data: URLs from previous session to avoid memory crash
+          if (parsed && parsed.scores) {
+            Object.keys(parsed.scores).forEach(k => {
+              if (parsed.scores[k] && Array.isArray(parsed.scores[k].uploadedFiles)) {
+                parsed.scores[k].uploadedFiles.forEach(f => {
+                  if (f.url && f.url.startsWith('data:')) {
+                    if (!f.fileKey) f.fileKey = f.id;
+                    f.url = '';
+                  }
+                });
+              }
+            });
+          }
+          return parsed;
+        }
       } catch(e) {}
 
       const userObj = (settings.users || []).find(u => u.id === userId);
@@ -759,35 +861,27 @@
           }
 
           for (const file of fileEntries) {
+            const fileId = 'file_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
             const savedName = customFilename || `[${userName.replace(/\s+/g, '_')}]_${Date.now()}_${file.name}`;
-            const dataUrl = await readFileAsDataUrl(file);
+            
+            // Store binary safely in IndexedDB (no Base64 in memory!)
+            await PkksFileDB.set(fileId, file);
+
             uploadedFiles.push({
+              id: fileId,
+              fileKey: fileId,
               originalName: file.name,
               savedName: savedName,
-              url: dataUrl,
+              url: '',
               size: `${(file.size / 1024).toFixed(1)} KB`,
               folder: "PKKS 2026",
               user: userName,
               isDrive: false
             });
 
-            // Background sync to Google Apps Script
-            if (appsScriptUrl && dataUrl) {
-              try {
-                const b64 = dataUrl.split(',')[1];
-                const p = new URLSearchParams();
-                p.append('filename', savedName);
-                p.append('mimeType', file.type || 'application/octet-stream');
-                p.append('file', b64);
-                p.append('user', userName);
-                p.append('folderId', folderId);
-                originalFetch(appsScriptUrl, {
-                  method: 'POST',
-                  mode: 'no-cors',
-                  headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                  body: p
-                }).catch(e => console.log('Apps Script upload sync notice:', e));
-              } catch(e) {}
+            // Async background upload to Google Apps Script without persisting Base64
+            if (appsScriptUrl && folderId) {
+              uploadFileToGDriveBackground(file, savedName, userName, folderId, appsScriptUrl);
             }
           }
         }
@@ -1836,18 +1930,24 @@
           });
           const resData = await res.json();
           if (resData.status === 'success' && resData.files && resData.files.length > 0) {
-            let uploadedUrl = resData.files[0].url;
-            let savedName = resData.files[0].savedName;
+            const fileInfo = resData.files[0];
+            let uploadedUrl = fileInfo.url || '';
+            let savedName = fileInfo.savedName || file.name;
+            let fileId = fileInfo.id || ('file_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6));
+
+            // Also guarantee file is in IndexedDB
+            await PkksFileDB.set(fileId, file);
 
             if (!state.scores[itemId]) state.scores[itemId] = {};
             if (!state.scores[itemId].uploadedFiles) state.scores[itemId].uploadedFiles = [];
             
             state.scores[itemId].uploadedFiles.push({
-              id: 'file_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6),
+              id: fileId,
+              fileKey: fileInfo.fileKey || fileId,
               itemId: itemId,
               name: savedName,
               savedName: savedName,
-              url: uploadedUrl,
+              url: uploadedUrl.startsWith('data:') ? '' : uploadedUrl,
               isDrive: false,
               folder: 'PKKS 2026',
               user: activeUserName,
@@ -1874,6 +1974,12 @@
       if (state.scores[itemId] && state.scores[itemId].uploadedFiles) {
         const targetFile = state.scores[itemId].uploadedFiles.find(f => f.id === fileId);
         const fileNameToDelete = targetFile ? (targetFile.savedName || targetFile.name) : null;
+        const fileKey = targetFile ? (targetFile.fileKey || targetFile.id) : fileId;
+
+        // Clean from IndexedDB
+        if (fileKey) {
+          await PkksFileDB.delete(fileKey);
+        }
 
         state.scores[itemId].uploadedFiles = state.scores[itemId].uploadedFiles.filter(f => f.id !== fileId);
 
@@ -1904,6 +2010,35 @@
       imageObj: null
     };
 
+    window.openFilePreviewById = async function(itemId, fileId) {
+      const itemData = state.scores[itemId] || {};
+      const files = itemData.uploadedFiles || [];
+      const file = files.find(f => f.id === fileId);
+      if (!file) {
+        alert("Berkas tidak ditemukan.");
+        return;
+      }
+
+      // If local server URL exists (e.g. on localhost)
+      if (!isStaticDeploy && file.url && file.url.startsWith('/api/pdf-bytes')) {
+        openPreview(file);
+        return;
+      }
+
+      // Retrieve binary blob from IndexedDB (Zero memory usage!)
+      const fileKey = file.fileKey || file.id;
+      const blob = await PkksFileDB.get(fileKey);
+      if (blob) {
+        const blobUrl = URL.createObjectURL(blob);
+        const previewObj = Object.assign({}, file, { url: blobUrl, isBlobUrl: true });
+        openPreview(previewObj);
+      } else if (file.url && (file.url.startsWith('http://') || file.url.startsWith('https://'))) {
+        openPreview(file);
+      } else {
+        alert("Berkas bukti fisik tersimpan di Google Drive atau data lokal telah dibersihkan.");
+      }
+    };
+
     function openPreview(file) {
       window.previewCanvasState = { zoom: 1, rotation: 0, imageObj: null };
       state.previewFile = file;
@@ -1917,7 +2052,9 @@
       const rawName = file.savedName || file.name || '';
       const ext = fileName.split('.').pop().toLowerCase();
       const npsn = state.schoolNpsn || '20231556';
-      const fileApiUrl = '/api/pdf-bytes?npsn=' + npsn + '&file=' + encodeURIComponent(rawName);
+      const fileApiUrl = (file.url && (file.url.startsWith('blob:') || file.url.startsWith('http://') || file.url.startsWith('https://') || file.url.startsWith('data:')))
+        ? file.url
+        : ('/api/pdf-bytes?npsn=' + npsn + '&file=' + encodeURIComponent(rawName));
 
       setTimeout(() => {
         if (ext === 'pdf') {
@@ -1929,6 +2066,9 @@
     }
 
     function closePreview() {
+      if (state.previewFile && state.previewFile.isBlobUrl && state.previewFile.url) {
+        try { URL.revokeObjectURL(state.previewFile.url); } catch(e) {}
+      }
       state.previewFile = null;
       renderApp();
     }
@@ -2928,7 +3068,7 @@
                             <div class="file-meta" style="color:#059669; font-weight:700;">Pengunggah: ${f.user || activeUserObj.name}</div>
                           </div>
                           <div class="file-actions">
-                            <button onclick='openPreview(${JSON.stringify(f).replace(/'/g, "&apos;")})' class="btn-xs btn-view">👁️ Previu</button>
+                            <button onclick="openFilePreviewById('${item.id}', '${f.id}')" class="btn-xs btn-view">👁️ Previu</button>
                             <button onclick="removeFile('${item.id}', '${f.id}')" class="btn-xs btn-delete">🗑️ Hapus</button>
                           </div>
                         </div>
