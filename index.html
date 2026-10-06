@@ -866,6 +866,8 @@
             
             // Store binary safely in IndexedDB (no Base64 in memory!)
             await PkksFileDB.set(fileId, file);
+            if (savedName) await PkksFileDB.set(savedName, file);
+            if (file.name) await PkksFileDB.set(file.name, file);
 
             uploadedFiles.push({
               id: fileId,
@@ -920,6 +922,17 @@
         const file = parsedUrl.searchParams.get('file');
         if (file && file.includes('logo_sekolah')) {
           return originalFetch('logo-pkks.png');
+        }
+        if (file) {
+          try {
+            const blob = await PkksFileDB.get(file);
+            if (blob) {
+              return new Response(blob, {
+                status: 200,
+                headers: { 'Content-Type': blob.type || 'application/octet-stream' }
+              });
+            }
+          } catch(e) {}
         }
         return new Response(new Blob([]), { status: 200 });
       }
@@ -1937,6 +1950,8 @@
 
             // Also guarantee file is in IndexedDB
             await PkksFileDB.set(fileId, file);
+            if (savedName) await PkksFileDB.set(savedName, file);
+            if (file.name) await PkksFileDB.set(file.name, file);
 
             if (!state.scores[itemId]) state.scores[itemId] = {};
             if (!state.scores[itemId].uploadedFiles) state.scores[itemId].uploadedFiles = [];
@@ -2019,24 +2034,32 @@
         return;
       }
 
-      // If local server URL exists (e.g. on localhost)
-      if (!isStaticDeploy && file.url && file.url.startsWith('/api/pdf-bytes')) {
-        openPreview(file);
-        return;
-      }
-
-      // Retrieve binary blob from IndexedDB (Zero memory usage!)
+      // Priority 1: Check IndexedDB (instant, zero network latency, works offline)
       const fileKey = file.fileKey || file.id;
-      const blob = await PkksFileDB.get(fileKey);
+      let blob = await PkksFileDB.get(fileKey);
+      if (!blob && file.id) blob = await PkksFileDB.get(file.id);
+      if (!blob && file.savedName) blob = await PkksFileDB.get(file.savedName);
+      if (!blob && file.name) blob = await PkksFileDB.get(file.name);
+
       if (blob) {
         const blobUrl = URL.createObjectURL(blob);
         const previewObj = Object.assign({}, file, { url: blobUrl, isBlobUrl: true });
         openPreview(previewObj);
-      } else if (file.url && (file.url.startsWith('http://') || file.url.startsWith('https://'))) {
-        openPreview(file);
-      } else {
-        alert("Berkas bukti fisik tersimpan di Google Drive atau data lokal telah dibersihkan.");
+        return;
       }
+
+      // Priority 2: Direct file URL if already present
+      if (file.url) {
+        openPreview(file);
+        return;
+      }
+
+      // Priority 3: Fallback query via API
+      const npsn = state.schoolNpsn || '20231556';
+      const rawName = file.savedName || file.name || '';
+      const fallbackUrl = '/api/pdf-bytes?npsn=' + npsn + '&file=' + encodeURIComponent(rawName);
+      const previewObj = Object.assign({}, file, { url: fallbackUrl });
+      openPreview(previewObj);
     };
 
     function openPreview(file) {
@@ -2052,9 +2075,7 @@
       const rawName = file.savedName || file.name || '';
       const ext = fileName.split('.').pop().toLowerCase();
       const npsn = state.schoolNpsn || '20231556';
-      const fileApiUrl = (file.url && (file.url.startsWith('blob:') || file.url.startsWith('http://') || file.url.startsWith('https://') || file.url.startsWith('data:')))
-        ? file.url
-        : ('/api/pdf-bytes?npsn=' + npsn + '&file=' + encodeURIComponent(rawName));
+      const fileApiUrl = file.url || ('/api/pdf-bytes?npsn=' + npsn + '&file=' + encodeURIComponent(rawName));
 
       setTimeout(() => {
         if (ext === 'pdf') {
@@ -2074,64 +2095,105 @@
     }
 
     function renderImageCanvas(imgUrl, canvasId) {
-      const canvas = document.getElementById(canvasId);
-      if (!canvas) return;
-      const ctx = canvas.getContext('2d');
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      let canvas = document.getElementById(canvasId);
+      if (!canvas) {
+        setTimeout(() => renderImageCanvas(imgUrl, canvasId), 80);
+        return;
+      }
       const loadingEl = document.getElementById('image-canvas-loading');
-      if (loadingEl) loadingEl.style.display = 'block';
+      if (loadingEl) {
+        loadingEl.style.display = 'block';
+        loadingEl.innerText = '⏳ Memuat gambar ke canvas...';
+      }
 
-      if (!imgUrl.startsWith('data:')) {
+      const img = new Image();
+      // CRITICAL: NEVER set crossOrigin on blob: or data: URLs (causes CORS block in Chrome)!
+      if (imgUrl.startsWith('http://') || imgUrl.startsWith('https://')) {
         img.crossOrigin = "anonymous";
       }
-      img.onload = function() {
+
+      const onImageLoaded = function() {
         if (loadingEl) loadingEl.style.display = 'none';
         window.previewCanvasState.imageObj = img;
         drawCanvasImage();
       };
-      img.onerror = function() {
-        if (loadingEl) loadingEl.innerText = '⚠️ Gagal memuat file gambar.';
-        const rawName = state.previewFile ? (state.previewFile.savedName || state.previewFile.name) : '';
-        if (rawName && !img.src.includes('PKKS%202026') && !img.src.startsWith('data:')) {
-          img.src = 'PKKS%202026/' + encodeURIComponent(rawName);
+
+      img.onload = onImageLoaded;
+      img.onerror = function(err) {
+        console.warn("Failed to load image on primary canvas src, attempting fallback:", err);
+        const fallbackImg = document.getElementById('image-preview-fallback');
+        if (fallbackImg) {
+          fallbackImg.src = imgUrl;
+          fallbackImg.style.display = 'block';
+          if (canvas) canvas.style.display = 'none';
+          if (loadingEl) loadingEl.style.display = 'none';
+        } else if (loadingEl) {
+          loadingEl.innerText = '⚠️ Gagal memuat file gambar.';
         }
       };
+
       img.src = imgUrl;
+      if (img.complete && img.naturalWidth > 0) {
+        onImageLoaded();
+      }
     }
+    window.renderImageCanvas = renderImageCanvas;
 
     function drawCanvasImage() {
       const canvas = document.getElementById('image-preview-canvas');
+      const fallbackImg = document.getElementById('image-preview-fallback');
       const img = window.previewCanvasState.imageObj;
-      if (!canvas || !img) return;
+      if (!img) return;
 
-      const ctx = canvas.getContext('2d');
       const zoom = window.previewCanvasState.zoom || 1;
       const rot = window.previewCanvasState.rotation || 0;
 
-      const isRotated = rot === 90 || rot === 270;
-      const w = img.naturalWidth || img.width || 800;
-      const h = img.naturalHeight || img.height || 600;
+      if (canvas && canvas.getContext) {
+        try {
+          const ctx = canvas.getContext('2d');
+          const isRotated = rot === 90 || rot === 270;
+          const w = img.naturalWidth || img.width || 800;
+          const h = img.naturalHeight || img.height || 600;
 
-      const maxW = 900;
-      const aspect = w / h;
-      let displayW = Math.min(w, maxW) * zoom;
-      let displayH = displayW / aspect;
+          if (w > 0 && h > 0) {
+            const maxW = 900;
+            const aspect = w / h;
+            let displayW = Math.min(w, maxW) * zoom;
+            let displayH = displayW / aspect;
 
-      if (isRotated) {
-        canvas.width = displayH;
-        canvas.height = displayW;
-      } else {
-        canvas.width = displayW;
-        canvas.height = displayH;
+            if (isRotated) {
+              canvas.width = Math.round(displayH);
+              canvas.height = Math.round(displayW);
+            } else {
+              canvas.width = Math.round(displayW);
+              canvas.height = Math.round(displayH);
+            }
+
+            ctx.save();
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.translate(canvas.width / 2, canvas.height / 2);
+            ctx.rotate((rot * Math.PI) / 180);
+            ctx.drawImage(img, -displayW / 2, -displayH / 2, displayW, displayH);
+            ctx.restore();
+
+            canvas.style.display = 'block';
+            if (fallbackImg) fallbackImg.style.display = 'none';
+            return;
+          }
+        } catch (e) {
+          console.warn("Canvas draw exception, using img fallback:", e);
+        }
       }
 
-      ctx.save();
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.translate(canvas.width / 2, canvas.height / 2);
-      ctx.rotate((rot * Math.PI) / 180);
-      ctx.drawImage(img, -displayW / 2, -displayH / 2, displayW, displayH);
-      ctx.restore();
+      // Direct Image Fallback
+      if (fallbackImg) {
+        fallbackImg.src = img.src;
+        fallbackImg.style.display = 'block';
+        fallbackImg.style.transform = `scale(${zoom}) rotate(${rot}deg)`;
+        if (canvas) canvas.style.display = 'none';
+      }
     }
+    window.drawCanvasImage = drawCanvasImage;
 
     window.adjustCanvasZoom = function(delta) {
       window.previewCanvasState.zoom = Math.max(0.25, Math.min(3, (window.previewCanvasState.zoom || 1) + delta));
@@ -2151,11 +2213,20 @@
 
     window.printCanvasPreview = function() {
       const canvas = document.getElementById('image-preview-canvas');
-      if (canvas) {
-        const dataUrl = canvas.toDataURL('image/png');
+      const fallbackImg = document.getElementById('image-preview-fallback');
+      let dataUrl = '';
+      if (canvas && canvas.style.display !== 'none' && canvas.width > 0) {
+        try {
+          dataUrl = canvas.toDataURL('image/png');
+        } catch(e) {}
+      }
+      if (!dataUrl && fallbackImg && fallbackImg.src) {
+        dataUrl = fallbackImg.src;
+      }
+      if (dataUrl) {
         const printWindow = window.open('', '_blank');
         if (printWindow) {
-          printWindow.document.write('<html><head><title>Print Dokumen Bukti Fisik</title></head><body style="margin:0; text-align:center;"><img src="' + dataUrl + '" style="max-width:100%; height:auto;" /><script>window.onload = function(){ window.print(); window.close(); }<\\/script></body></html>');
+          printWindow.document.write('<html><head><title>Print Dokumen Bukti Fisik</title></head><body style="margin:0; text-align:center;"><img src="' + dataUrl + '" style="max-width:100%; height:auto;" /><script>window.onload = function(){ window.print(); window.close(); }<\/script></body></html>');
           printWindow.document.close();
         }
       }
@@ -3354,9 +3425,13 @@
       let fileName = file.name || file.savedName || 'Dokumen';
       let rawName = file.savedName || file.name || '';
       const npsn = state.schoolNpsn || '20231556';
-      let fileApiUrl = rawName ? ('/api/pdf-bytes?npsn=' + npsn + '&file=' + encodeURIComponent(rawName)) : (file.url || '');
+      let fileApiUrl = (file.url && (file.url.startsWith('blob:') || file.url.startsWith('data:')))
+        ? file.url
+        : (rawName ? ('/api/pdf-bytes?npsn=' + npsn + '&file=' + encodeURIComponent(rawName)) : (file.url || ''));
       let localSrc = rawName ? ('/PKKS%202026/' + encodeURIComponent(rawName)) : fileApiUrl;
-      let downloadUrl = (fileApiUrl || localSrc) + (fileApiUrl.includes('?') ? '&download=1' : '?download=1');
+      let downloadUrl = (file.url && (file.url.startsWith('blob:') || file.url.startsWith('data:')))
+        ? file.url
+        : ((fileApiUrl || localSrc) + (fileApiUrl.includes('?') ? '&download=1' : '?download=1'));
       
       const ext = fileName.split('.').pop().toLowerCase();
       const isImage = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg'].includes(ext);
@@ -3404,9 +3479,10 @@
                   <button type="button" onclick="resetCanvasView()" class="btn-primary" style="width:auto; padding:5px 12px; font-size:11px; background:#475569;" title="Normal">📐 Normal (100%)</button>
                   <button type="button" onclick="printCanvasPreview()" class="btn-primary" style="width:auto; padding:5px 12px; font-size:11px; background:#059669;" title="Cetak Gambar">🖨️ Cetak</button>
                 </div>
-                <div id="image-canvas-container" style="padding: 20px; text-align: center; background: #0f172a; min-height: 75vh; max-height: 75vh; overflow: auto; display: flex; flex-direction: column; align-items: center; justify-content: center;">
-                  <canvas id="image-preview-canvas" style="box-shadow: 0 10px 25px rgba(0,0,0,0.5); border-radius: 8px; max-width: 95%; background: white;"></canvas>
-                  <div id="image-canvas-loading" style="color: #94a3b8; font-size: 13px; font-weight: 700; margin-top: 10px;">⏳ Memuat gambar ke canvas...</div>
+                <div id="image-canvas-container" style="padding: 24px; text-align: center; background: #0f172a; min-height: 75vh; max-height: 75vh; overflow: auto; display: flex; flex-direction: column; align-items: center; justify-content: flex-start;">
+                  <canvas id="image-preview-canvas" style="display:none; margin: auto 0; box-shadow: 0 10px 25px rgba(0,0,0,0.5); border-radius: 8px; max-width: 95%; background: white;"></canvas>
+                  <img id="image-preview-fallback" style="display:none; margin: auto 0; box-shadow: 0 10px 25px rgba(0,0,0,0.5); border-radius: 8px; max-width: 95%; height: auto;" />
+                  <div id="image-canvas-loading" style="color: #38bdf8; font-size: 13px; font-weight: 700; margin: auto 0; padding: 20px;">⏳ Memuat gambar ke canvas...</div>
                 </div>
               ` : isPdf ? `
                 <div id="pdf-canvas-container" style="width: 100%; height: 100%; min-height: 80vh; max-height: 80vh; overflow-y: auto; text-align: center; background: #334155; padding: 20px 0;"></div>
