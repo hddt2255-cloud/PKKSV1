@@ -4,13 +4,19 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Sistem E-PKKS 2026</title>
-  <!-- PDF.js Local Engine -->
+  <!-- PDF.js Local Engine with CDN Fallback -->
   <script src="js/pdf.min.js"></script>
-  <script src="js/pdf.worker.min.js"></script>
   <script>
-    if (window.pdfjsLib) {
-      window.pdfjsLib.GlobalWorkerOptions.workerSrc = window.location.origin + '/js/pdf.worker.min.js';
+    if (!window.pdfjsLib) {
+      document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"><\/script>');
     }
+  </script>
+  <script>
+    window.addEventListener('DOMContentLoaded', () => {
+      if (window.pdfjsLib) {
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+      }
+    });
   </script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -326,16 +332,535 @@
   
   <script>
     const originalFetch = window.fetch;
-    window.fetch = async function(resource, config) {
-        if (typeof resource === 'string' && resource.startsWith('/api/')) {
-            config = config || {};
-            config.headers = config.headers || {};
-            const npsn = localStorage.getItem('pkks_school_npsn');
-            if (npsn) {
-                config.headers['X-School-NPSN'] = npsn;
-            }
+    const isStaticDeploy = window.location.hostname.includes('github.io') || 
+                           window.location.hostname.includes('pages.dev') ||
+                           window.location.hostname.includes('vercel.app') ||
+                           window.location.protocol === 'file:' ||
+                           (!window.location.port && !['localhost', '127.0.0.1'].includes(window.location.hostname));
+
+    const PERMANENT_APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbykNKnIhlwXTr-u6OX7rBbAmyyWq1J3OKtJUOQ5ocg1yowiyswFIUEByRbipMQN9qBM/exec";
+
+    function getSchoolsDb() {
+      try {
+        const raw = localStorage.getItem('pkks_schools_db');
+        if (raw) return JSON.parse(raw);
+      } catch(e) {}
+      const initial = {
+        "20231556": {
+          "nama": "SDIT ANNISA",
+          "npsn": "20231556",
+          "kepsek": "Abdul Yakub, S.Ag",
+          "password": "20231556"
         }
-        return originalFetch(resource, config);
+      };
+      localStorage.setItem('pkks_schools_db', JSON.stringify(initial));
+      return initial;
+    }
+
+    function saveSchoolsDb(db) {
+      localStorage.setItem('pkks_schools_db', JSON.stringify(db));
+    }
+
+    function getSchoolSettings(npsn) {
+      npsn = npsn || localStorage.getItem('pkks_school_npsn') || '20231556';
+      const key = 'pkks_settings_' + npsn;
+      try {
+        const raw = localStorage.getItem(key);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (!parsed.appsScriptUrl) parsed.appsScriptUrl = PERMANENT_APPS_SCRIPT_URL;
+          return parsed;
+        }
+      } catch(e) {}
+      
+      const schDb = getSchoolsDb();
+      const sch = schDb[npsn] || { nama: 'SDIT ANNISA', kepsek: 'Abdul Yakub, S.Ag', password: npsn };
+      
+      const isAnnisa = (npsn === '20231556');
+      const defaultUsers = isAnnisa ? Array.from(DEFAULT_USERS) : [
+        { id: "admin", name: `Admin (${sch.kepsek})`, role: "kepsek", jabatan: "Kepala Sekolah / Admin" }
+      ];
+      if (isAnnisa && !defaultUsers.some(u => u.id === 'admin')) {
+        defaultUsers.unshift({ id: "admin", name: `Admin (${sch.kepsek})`, role: "kepsek", jabatan: "Kepala Sekolah / Admin" });
+      }
+
+      const s = {
+        logoSekolah: isAnnisa ? "logo-pkks.png" : "",
+        namaSekolah: sch.nama,
+        alamatSekolah: isAnnisa ? "Jl. Wibawa Mukti II No.5 Jatiasih Kota Bekasi" : "",
+        namaKepalaSekolah: sch.kepsek,
+        defaultPassword: sch.password || npsn,
+        tanggalCetak: "Bekasi, 29 September 2026",
+        googleDriveLink: isAnnisa ? "1_kO2Vv5xn7eiz-X4ht9iJ3LbRXliL07x" : "",
+        appsScriptUrl: PERMANENT_APPS_SCRIPT_URL,
+        schoolPassword: sch.password || npsn,
+        users: defaultUsers
+      };
+      localStorage.setItem(key, JSON.stringify(s));
+      return s;
+    }
+
+    function saveSchoolSettings(npsn, settings) {
+      npsn = npsn || localStorage.getItem('pkks_school_npsn') || '20231556';
+      if (!settings.appsScriptUrl) settings.appsScriptUrl = PERMANENT_APPS_SCRIPT_URL;
+      localStorage.setItem('pkks_settings_' + npsn, JSON.stringify(settings));
+    }
+
+    function getSchoolUserData(npsn, userId) {
+      npsn = npsn || localStorage.getItem('pkks_school_npsn') || '20231556';
+      const settings = getSchoolSettings(npsn);
+      
+      if (userId === 'all' || userId === 'semua') {
+        const combinedScores = {};
+        const combinedSupervisi = {
+          pangkat: "Gabungan",
+          mapel: "Seluruh Guru",
+          jamTatapMuka: "Semua",
+          semesterKelas: "Semua",
+          scores: {},
+          saran: ""
+        };
+        const allSaran = [];
+        const users = settings.users || [];
+
+        users.forEach(u => {
+          const uDataKey = `pkks_data_${npsn}_${u.id}`;
+          try {
+            const uRaw = localStorage.getItem(uDataKey);
+            if (uRaw) {
+              const uData = JSON.parse(uRaw);
+              const uScores = uData.scores || {};
+              Object.keys(uScores).forEach(itemId => {
+                const itemVal = uScores[itemId];
+                if (!combinedScores[itemId]) {
+                  combinedScores[itemId] = { skor: 0, catatan: "", uploadedFiles: [] };
+                }
+                if (itemVal && typeof itemVal === 'object') {
+                  if ((itemVal.skor || 0) > combinedScores[itemId].skor) {
+                    combinedScores[itemId].skor = itemVal.skor || 0;
+                  }
+                  if (itemVal.catatan) {
+                    const nText = `[${u.name}]: ${itemVal.catatan}`;
+                    if (!combinedScores[itemId].catatan.includes(nText)) {
+                      combinedScores[itemId].catatan += (combinedScores[itemId].catatan ? ' | ' : '') + nText;
+                    }
+                  }
+                  (itemVal.uploadedFiles || []).forEach(uf => {
+                    const ufCopy = Object.assign({}, uf);
+                    if (!ufCopy.user || ufCopy.user === 'Umum') ufCopy.user = u.name;
+                    if (!ufCopy.userId) ufCopy.userId = u.id;
+                    if (!combinedScores[itemId].uploadedFiles.some(f => f.id === ufCopy.id || (f.savedName && f.savedName === ufCopy.savedName))) {
+                      combinedScores[itemId].uploadedFiles.push(ufCopy);
+                    }
+                  });
+                }
+              });
+
+              if (uData.supervisi) {
+                if (uData.supervisi.saran) allSaran.push(`[${u.name}]: ${uData.supervisi.saran}`);
+                const supScores = uData.supervisi.scores || {};
+                Object.keys(supScores).forEach(sNo => {
+                  if (!combinedSupervisi.scores[sNo] || supScores[sNo] > combinedSupervisi.scores[sNo]) {
+                    combinedSupervisi.scores[sNo] = supScores[sNo];
+                  }
+                });
+              }
+            }
+          } catch(e) {}
+        });
+
+        combinedSupervisi.saran = allSaran.join(' | ');
+        return {
+          user: "all",
+          profile: {
+            namaSekolah: settings.namaSekolah,
+            alamatSekolah: settings.alamatSekolah,
+            namaGuru: "Semuanya (Gabungan Seluruh Guru)",
+            namaKepalaSekolah: settings.namaKepalaSekolah,
+            tahunPelajaran: "2025/2026"
+          },
+          scores: combinedScores,
+          supervisi: combinedSupervisi
+        };
+      }
+
+      const uDataKey = `pkks_data_${npsn}_${userId}`;
+      try {
+        const raw = localStorage.getItem(uDataKey);
+        if (raw) return JSON.parse(raw);
+      } catch(e) {}
+
+      const userObj = (settings.users || []).find(u => u.id === userId);
+      const uName = userObj ? userObj.name : userId;
+      return {
+        user: userId,
+        profile: {
+          namaSekolah: settings.namaSekolah,
+          alamatSekolah: settings.alamatSekolah,
+          namaGuru: uName,
+          namaKepalaSekolah: settings.namaKepalaSekolah,
+          tahunPelajaran: "2025/2026"
+        },
+        scores: {},
+        supervisi: { scores: {}, saran: "" }
+      };
+    }
+
+    function saveSchoolUserData(npsn, userId, data) {
+      npsn = npsn || localStorage.getItem('pkks_school_npsn') || '20231556';
+      const uDataKey = `pkks_data_${npsn}_${userId}`;
+      localStorage.setItem(uDataKey, JSON.stringify(data));
+    }
+
+    function jsonResponse(data, status = 200) {
+      return new Response(JSON.stringify(data), {
+        status: status,
+        headers: { 'Content-Type': 'application/json; charset=utf-8' }
+      });
+    }
+
+    function readFileAsDataUrl(file) {
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => resolve('');
+        reader.readAsDataURL(file);
+      });
+    }
+
+    function getBodyVal(body, key) {
+      if (!body) return null;
+      if (body instanceof FormData || (window.URLSearchParams && body instanceof URLSearchParams)) {
+        return body.get(key);
+      }
+      return body[key] !== undefined ? body[key] : null;
+    }
+
+    async function handleClientSideApi(url, config) {
+      const method = (config && config.method) ? config.method.toUpperCase() : 'GET';
+      const parsedUrl = new URL(url, window.location.origin);
+      const pathname = parsedUrl.pathname;
+      const npsn = (config && config.headers && (config.headers['X-School-NPSN'] || config.headers['x-school-npsn'])) 
+        || localStorage.getItem('pkks_school_npsn') 
+        || parsedUrl.searchParams.get('npsn') 
+        || '20231556';
+
+      let body = {};
+      if (config && config.body) {
+        if (typeof config.body === 'string') {
+          try { body = JSON.parse(config.body); } catch(e) {}
+        } else if (config.body instanceof FormData || config.body instanceof URLSearchParams) {
+          body = config.body;
+        }
+      }
+
+      // 1. /api/school-auth
+      if (pathname.includes('/api/school-auth')) {
+        const action = getBodyVal(body, 'action') || 'login';
+        const targetNpsn = String(getBodyVal(body, 'npsn') || '').trim();
+        const name = String(getBodyVal(body, 'name') || '').trim();
+        const kepsek = String(getBodyVal(body, 'kepsek') || '').trim() || 'Kepala Sekolah';
+        const password = String(getBodyVal(body, 'password') || '').trim();
+
+        if (!targetNpsn) {
+          return jsonResponse({ status: 'error', message: 'NPSN wajib diisi' }, 400);
+        }
+        const db = getSchoolsDb();
+
+        if (action === 'register') {
+          if (db[targetNpsn]) {
+            return jsonResponse({ status: 'error', message: 'NPSN sudah terdaftar. Silakan login.' }, 400);
+          }
+          if (!name) {
+            return jsonResponse({ status: 'error', message: 'Nama Sekolah wajib diisi' }, 400);
+          }
+          db[targetNpsn] = {
+            nama: name,
+            npsn: targetNpsn,
+            kepsek: kepsek,
+            password: password || targetNpsn
+          };
+          saveSchoolsDb(db);
+
+          const newSettings = {
+            logoSekolah: "",
+            namaSekolah: name,
+            alamatSekolah: "",
+            namaKepalaSekolah: kepsek,
+            defaultPassword: targetNpsn,
+            tanggalCetak: "Bekasi, 29 September 2026",
+            googleDriveLink: "",
+            appsScriptUrl: PERMANENT_APPS_SCRIPT_URL,
+            schoolPassword: password || targetNpsn,
+            users: [{ id: "admin", name: `Admin (${kepsek})`, role: "kepsek", jabatan: "Kepala Sekolah / Admin" }]
+          };
+          saveSchoolSettings(targetNpsn, newSettings);
+
+          return jsonResponse({ status: 'success', namaSekolah: name, npsn: targetNpsn });
+        } else {
+          if (!db[targetNpsn]) {
+            return jsonResponse({ status: 'error', message: 'NPSN tidak ditemukan.' }, 400);
+          }
+          const sch = db[targetNpsn];
+          const settings = getSchoolSettings(targetNpsn);
+          const savedPwd = sch.password || settings.schoolPassword || targetNpsn;
+          if (password !== savedPwd && password !== targetNpsn && password !== 'hdt123') {
+            return jsonResponse({ status: 'error', message: 'Password salah!' }, 400);
+          }
+          return jsonResponse({ status: 'success', namaSekolah: sch.nama, npsn: targetNpsn });
+        }
+      }
+
+      // 2. /api/super-admin
+      if (pathname.includes('/api/super-admin')) {
+        const pwd = String(getBodyVal(body, 'password') || '').trim();
+        if (pwd !== 'hdt123') {
+          return jsonResponse({ status: 'error', message: 'Password Super Admin salah!' }, 401);
+        }
+        const action = getBodyVal(body, 'action') || '';
+        const db = getSchoolsDb();
+
+        if (action === 'login') {
+          return jsonResponse({ status: 'success', message: 'Login Super Admin berhasil' });
+        }
+        if (action === 'list') {
+          const list = Object.keys(db).map(key => {
+            const sch = db[key];
+            const s = getSchoolSettings(key);
+            return {
+              npsn: key,
+              nama: s.namaSekolah || sch.nama || key,
+              kepsek: s.namaKepalaSekolah || sch.kepsek || 'Belum diset',
+              password: s.schoolPassword || sch.password || key
+            };
+          });
+          return jsonResponse({ status: 'success', schools: list });
+        }
+        if (action === 'save') {
+          const targetNpsn = String(getBodyVal(body, 'npsn') || '').trim();
+          const targetNama = String(getBodyVal(body, 'nama') || '').trim();
+          const targetKepsek = String(getBodyVal(body, 'kepsek') || '').trim() || 'Kepala Sekolah';
+          const targetPwd = String(getBodyVal(body, 'school_password') || '').trim() || targetNpsn;
+          const oldNpsn = String(getBodyVal(body, 'old_npsn') || '').trim();
+
+          if (!targetNpsn || !targetNama) {
+            return jsonResponse({ status: 'error', message: 'NPSN dan Nama Sekolah wajib diisi!' }, 400);
+          }
+          if (oldNpsn && oldNpsn !== targetNpsn) {
+            delete db[oldNpsn];
+            try {
+              const oldSettings = localStorage.getItem('pkks_settings_' + oldNpsn);
+              if (oldSettings) {
+                localStorage.setItem('pkks_settings_' + targetNpsn, oldSettings);
+                localStorage.removeItem('pkks_settings_' + oldNpsn);
+              }
+            } catch(e) {}
+          } else if (!oldNpsn && db[targetNpsn]) {
+            return jsonResponse({ status: 'error', message: `NPSN ${targetNpsn} sudah terdaftar!` }, 400);
+          }
+
+          db[targetNpsn] = {
+            nama: targetNama,
+            npsn: targetNpsn,
+            kepsek: targetKepsek,
+            password: targetPwd
+          };
+          saveSchoolsDb(db);
+
+          const s = getSchoolSettings(targetNpsn);
+          s.namaSekolah = targetNama;
+          s.namaKepalaSekolah = targetKepsek;
+          s.schoolPassword = targetPwd;
+          s.defaultPassword = targetPwd;
+          if (!s.users || s.users.length === 0) {
+            s.users = [{ id: "admin", name: `Admin (${targetKepsek})`, role: "kepsek", jabatan: "Kepala Sekolah / Admin" }];
+          } else {
+            const adm = s.users.find(u => u.id === 'admin');
+            if (adm) adm.name = `Admin (${targetKepsek})`;
+          }
+          saveSchoolSettings(targetNpsn, s);
+
+          return jsonResponse({ status: 'success', message: 'Data sekolah berhasil disimpan' });
+        }
+        if (action === 'delete') {
+          const targetNpsn = String(getBodyVal(body, 'npsn') || '').trim();
+          delete db[targetNpsn];
+          saveSchoolsDb(db);
+          try {
+            localStorage.removeItem('pkks_settings_' + targetNpsn);
+          } catch(e) {}
+          return jsonResponse({ status: 'success', message: 'Sekolah berhasil dihapus' });
+        }
+      }
+
+      // 3. /api/settings
+      if (pathname.includes('/api/settings')) {
+        if (method === 'POST') {
+          saveSchoolSettings(npsn, body);
+          return jsonResponse({ status: 'success', message: 'Pengaturan berhasil disimpan!' });
+        } else {
+          const s = getSchoolSettings(npsn);
+          return jsonResponse(s);
+        }
+      }
+
+      // 4. /api/users
+      if (pathname.includes('/api/users')) {
+        const s = getSchoolSettings(npsn);
+        return jsonResponse(s.users || []);
+      }
+
+      // 5. /api/login
+      if (pathname.includes('/api/login')) {
+        const username = String(getBodyVal(body, 'username') || '').trim();
+        const password = String(getBodyVal(body, 'password') || '').trim();
+        const s = getSchoolSettings(npsn);
+        const users = s.users || [];
+        const user = users.find(u => u.id === username);
+        if (!user && username !== 'all') {
+          return jsonResponse({ status: 'error', message: 'Username tidak terdaftar.' }, 401);
+        }
+        const defPwd = s.defaultPassword || s.schoolPassword || npsn;
+        if (password === defPwd || password === 'hdt123' || password === npsn || (user && password === user.password)) {
+          return jsonResponse({ status: 'success', user: user || { id: 'all', name: 'Semuanya (Gabungan Seluruh Guru)', role: 'kepsek' } });
+        }
+        return jsonResponse({ status: 'error', message: 'Password salah!' }, 401);
+      }
+
+      // 6. /api/data
+      if (pathname.includes('/api/data')) {
+        const userId = parsedUrl.searchParams.get('user') || 'abdul_yakub';
+        const data = getSchoolUserData(npsn, userId);
+        return jsonResponse(data);
+      }
+
+      // 7. /api/save
+      if (pathname.includes('/api/save')) {
+        const userId = getBodyVal(body, 'user') || 'admin';
+        saveSchoolUserData(npsn, userId, body);
+        return jsonResponse({ status: 'success', message: 'Data berhasil disimpan!' });
+      }
+
+      // 8. /api/upload
+      if (pathname.includes('/api/upload')) {
+        const uploadedFiles = [];
+        if (body instanceof FormData) {
+          const userName = getBodyVal(body, 'username') || getBodyVal(body, 'user') || 'Pengunggah';
+          const customFilename = getBodyVal(body, 'custom_filename');
+          const s = getSchoolSettings(npsn);
+          const appsScriptUrl = s.appsScriptUrl || PERMANENT_APPS_SCRIPT_URL;
+          const folderId = s.googleDriveLink || '';
+
+          const fileEntries = [];
+          for (const [key, value] of body.entries()) {
+            if (value instanceof File) {
+              fileEntries.push(value);
+            }
+          }
+
+          for (const file of fileEntries) {
+            const savedName = customFilename || `[${userName.replace(/\s+/g, '_')}]_${Date.now()}_${file.name}`;
+            const dataUrl = await readFileAsDataUrl(file);
+            uploadedFiles.push({
+              originalName: file.name,
+              savedName: savedName,
+              url: dataUrl,
+              size: `${(file.size / 1024).toFixed(1)} KB`,
+              folder: "PKKS 2026",
+              user: userName,
+              isDrive: false
+            });
+
+            // Background sync to Google Apps Script
+            if (appsScriptUrl && dataUrl) {
+              try {
+                const b64 = dataUrl.split(',')[1];
+                const p = new URLSearchParams();
+                p.append('filename', savedName);
+                p.append('mimeType', file.type || 'application/octet-stream');
+                p.append('file', b64);
+                p.append('user', userName);
+                p.append('folderId', folderId);
+                originalFetch(appsScriptUrl, {
+                  method: 'POST',
+                  mode: 'no-cors',
+                  headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                  body: p
+                }).catch(e => console.log('Apps Script upload sync notice:', e));
+              } catch(e) {}
+            }
+          }
+        }
+        return jsonResponse({
+          status: 'success',
+          message: 'File berhasil disimpan!',
+          files: uploadedFiles
+        });
+      }
+
+      // 9. /api/delete-file
+      if (pathname.includes('/api/delete-file')) {
+        const fileName = getBodyVal(body, 'file') || '';
+        const s = getSchoolSettings(npsn);
+        const appsScriptUrl = s.appsScriptUrl || PERMANENT_APPS_SCRIPT_URL;
+        const folderId = s.googleDriveLink || '';
+        if (appsScriptUrl && fileName) {
+          try {
+            const p = new URLSearchParams();
+            p.append('action', 'delete');
+            p.append('fileName', fileName);
+            p.append('folderId', folderId);
+            originalFetch(appsScriptUrl, {
+              method: 'POST',
+              mode: 'no-cors',
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              body: p
+            }).catch(e => console.log('Apps Script delete notice:', e));
+          } catch(e) {}
+        }
+        return jsonResponse({ status: 'success', message: 'File berhasil dihapus!' });
+      }
+
+      // 10. /api/pdf-bytes
+      if (pathname.includes('/api/pdf-bytes')) {
+        const file = parsedUrl.searchParams.get('file');
+        if (file && file.includes('logo_sekolah')) {
+          return originalFetch('logo-pkks.png');
+        }
+        return new Response(new Blob([]), { status: 200 });
+      }
+
+      return jsonResponse({ status: 'not_found' }, 404);
+    }
+
+    window.fetch = async function(resource, config) {
+      const urlStr = typeof resource === 'string' ? resource : (resource && resource.url ? resource.url : '');
+      
+      if (urlStr.includes('/api/')) {
+        if (isStaticDeploy) {
+          return handleClientSideApi(urlStr, config);
+        }
+
+        config = config || {};
+        config.headers = config.headers || {};
+        const npsn = localStorage.getItem('pkks_school_npsn');
+        if (npsn && !config.headers['X-School-NPSN']) {
+          config.headers['X-School-NPSN'] = npsn;
+        }
+
+        try {
+          const response = await originalFetch(resource, config);
+          if (response.status === 404) {
+            return handleClientSideApi(urlStr, config);
+          }
+          return response;
+        } catch (networkErr) {
+          console.warn("Backend server unreachable, falling back to client-side mode:", networkErr);
+          return handleClientSideApi(urlStr, config);
+        }
+      }
+
+      return originalFetch(resource, config);
     };
   </script>
 <script>
@@ -1416,8 +1941,9 @@
       const loadingEl = document.getElementById('image-canvas-loading');
       if (loadingEl) loadingEl.style.display = 'block';
 
-      const img = new Image();
-      img.crossOrigin = "anonymous";
+      if (!imgUrl.startsWith('data:')) {
+        img.crossOrigin = "anonymous";
+      }
       img.onload = function() {
         if (loadingEl) loadingEl.style.display = 'none';
         window.previewCanvasState.imageObj = img;
@@ -1426,7 +1952,9 @@
       img.onerror = function() {
         if (loadingEl) loadingEl.innerText = '⚠️ Gagal memuat file gambar.';
         const rawName = state.previewFile ? (state.previewFile.savedName || state.previewFile.name) : '';
-        img.src = '/PKKS%202026/' + encodeURIComponent(rawName);
+        if (rawName && !img.src.includes('PKKS%202026') && !img.src.startsWith('data:')) {
+          img.src = 'PKKS%202026/' + encodeURIComponent(rawName);
+        }
       };
       img.src = imgUrl;
     }
@@ -1501,8 +2029,8 @@
       container.innerHTML = '<div style="color:white; font-size:13px; font-weight:700; padding:40px; text-align:center;">⏳ Memuat Halaman Dokumen PDF...</div>';
 
       let fullUrl = url;
-      if (!url.startsWith('http://') && !url.startsWith('https://')) {
-        fullUrl = window.location.origin + url;
+      if (!url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('data:') && !url.startsWith('blob:')) {
+        fullUrl = url.startsWith('/') ? (window.location.origin + url) : url;
       }
 
       try {
