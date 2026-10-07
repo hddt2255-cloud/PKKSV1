@@ -98,6 +98,7 @@ INITIAL_USERS = [
 ]
 
 DEFAULT_SETTINGS = {
+  "logoSekolah": "/api/pdf-bytes?npsn=20231556&file=logo_sekolah_1791260968314_LOGO-SDIT1.png",
   "namaSekolah": "SDIT ANNISA BOGOR",
   "alamatSekolah": "Jl. Raya Ciomas No. 12, Ciomas, Kabupaten Bogor",
   "namaKepalaSekolah": "Abdul Yakub, S.Ag",
@@ -326,10 +327,32 @@ class PKKSRequestHandler(http.server.SimpleHTTPRequestHandler):
                         if os.path.exists(cand):
                             filepath = cand
                             break
+                        cand2 = os.path.join(ds_dir, sch, safe_name)
+                        if os.path.exists(cand2):
+                            filepath = cand2
+                            break
                 if not filepath:
                     cand = os.path.join(BASE_DIR, PKKS_FOLDER_NAME, safe_name)
                     if os.path.exists(cand):
                         filepath = cand
+                if not filepath:
+                    cand = os.path.join(BASE_DIR, safe_name)
+                    if os.path.exists(cand):
+                        filepath = cand
+
+            # Robust fallback for logo requests so broken images never appear
+            if (not filepath or not os.path.exists(filepath)) and ('logo' in safe_name.lower()):
+                for fallback_logo in ['logo_sekolah_1791260968314_LOGO-SDIT1.png', 'logo-annisa.png', 'logo-pkks.png']:
+                    cand1 = os.path.join(BASE_DIR, 'data_schools', '20231556', PKKS_FOLDER_NAME, fallback_logo)
+                    cand2 = os.path.join(BASE_DIR, fallback_logo)
+                    cand3 = os.path.join(BASE_DIR, PKKS_FOLDER_NAME, fallback_logo)
+                    for c_try in [cand1, cand2, cand3]:
+                        if os.path.exists(c_try):
+                            filepath = c_try
+                            safe_name = fallback_logo
+                            break
+                    if filepath and os.path.exists(filepath):
+                        break
 
             if filepath and os.path.exists(filepath) and os.path.isfile(filepath):
                 self.send_response(200)
@@ -1263,20 +1286,30 @@ class PKKSRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Headers', 'Content-Type, X-School-NPSN')
         self.end_headers()
 
+def start_server_instance(port):
+    try:
+        http.server.ThreadingHTTPServer.allow_reuse_address = True
+        http.server.ThreadingHTTPServer.daemon_threads = True
+        httpd = http.server.ThreadingHTTPServer(("", port), PKKSRequestHandler)
+        print(f"URL Browser Direct: http://localhost:{port}")
+        httpd.serve_forever()
+    except Exception as e:
+        print(f"Port {port} status: {e}")
+
 if __name__ == '__main__':
     os.chdir(BASE_DIR)
-    http.server.ThreadingHTTPServer.allow_reuse_address = True
-    http.server.ThreadingHTTPServer.daemon_threads = True
-    with http.server.ThreadingHTTPServer(("", PORT), PKKSRequestHandler) as httpd:
-        print("\n" + "="*65)
-        print("SISTEM MULTI-USER PKKS SDIT AN-NISA WEB SERVER")
-        print(f"Folder Berkas: PKKS 2026 ({UPLOADS_DIR})")
-        print(f"Jumlah Akun Guru/Kepsek: {len(load_settings().get('users', []))}")
-        print("="*65)
-        print(f"Status: Server Aktif & Berjalan (Multi-Threaded)!")
-        print(f"URL Browser Direct: http://localhost:{PORT}")
-        print("="*65 + "\n")
-        try:
-            httpd.serve_forever()
-        except KeyboardInterrupt:
-            print("\nServer dihentikan.")
+    print("\n" + "="*65)
+    print("SISTEM MULTI-USER PKKS SDIT AN-NISA WEB SERVER")
+    print(f"Folder Berkas: PKKS 2026 ({UPLOADS_DIR})")
+    print(f"Jumlah Akun Guru/Kepsek: {len(load_settings().get('users', []))}")
+    print("="*65)
+    print("Status: Server Aktif & Berjalan (Multi-Threaded)!")
+    
+    aux_port = 8085 if PORT == 8001 else 8001
+    t = threading.Thread(target=start_server_instance, args=(aux_port,), daemon=True)
+    t.start()
+    
+    try:
+        start_server_instance(PORT)
+    except KeyboardInterrupt:
+        print("\nServer dihentikan.")

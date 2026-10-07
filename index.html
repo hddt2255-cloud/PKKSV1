@@ -948,9 +948,6 @@
       // 10. /api/pdf-bytes
       if (pathname.includes('/api/pdf-bytes')) {
         const file = parsedUrl.searchParams.get('file');
-        if (file && file.includes('logo_sekolah')) {
-          return originalFetch('logo-pkks.png');
-        }
         if (file) {
           try {
             const blob = await PkksFileDB.get(file);
@@ -961,6 +958,13 @@
               });
             }
           } catch(e) {}
+        }
+        if (file && (file.includes('logo') || file.includes('LOGO'))) {
+          try {
+            const fallbackRes = await originalFetch('logo-annisa.png');
+            if (fallbackRes && fallbackRes.ok) return fallbackRes;
+          } catch(e) {}
+          return originalFetch('logo-pkks.png');
         }
         return new Response(new Blob([]), { status: 200 });
       }
@@ -1396,6 +1400,18 @@
       }
     }
 
+    window.previewSelectedLogo = function(e) {
+      const file = e.target.files && e.target.files[0];
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = function(evt) {
+          const prev = document.getElementById('set-logo-preview');
+          if (prev) prev.src = evt.target.result;
+        };
+        reader.readAsDataURL(file);
+      }
+    };
+
     window.uploadLogoBtn = async function() {
       const fileInput = document.getElementById('set-logo-file');
       if (!fileInput.files || fileInput.files.length === 0) {
@@ -1406,7 +1422,8 @@
       const formData = new FormData();
       formData.append('file', file);
       formData.append('username', 'Admin');
-      formData.append('custom_filename', 'logo_sekolah_' + Date.now() + '_' + file.name.replace(/[^a-zA-Z0-9.\-_]/g, '_'));
+      const safeCustomName = 'logo_sekolah_' + Date.now() + '_' + file.name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+      formData.append('custom_filename', safeCustomName);
       
       state.showToast('⏳ Mengunggah logo...');
       try {
@@ -1414,15 +1431,18 @@
         const resData = await res.json();
         if (resData.status === 'success' && resData.files && resData.files.length > 0) {
           const fileInfo = resData.files[0];
-          const url = fileInfo.url || ('/api/pdf-bytes?npsn=' + state.settings.npsn + '&file=' + encodeURIComponent(fileInfo.savedName));
-          document.getElementById('set-logo-url').value = url;
-          document.getElementById('set-logo-preview').src = url;
+          const activeNpsn = state.schoolNpsn || (state.settings && state.settings.npsn) || localStorage.getItem('pkks_school_npsn') || '20231556';
+          const url = fileInfo.url || ('/api/pdf-bytes?npsn=' + activeNpsn + '&file=' + encodeURIComponent(fileInfo.savedName));
+          const urlInput = document.getElementById('set-logo-url');
+          if (urlInput) urlInput.value = url;
+          const previewEl = document.getElementById('set-logo-preview');
+          if (previewEl) previewEl.src = url;
           state.settings.logoSekolah = url;
           await state.saveSettings(state.settings);
           state.showToast('✅ Logo berhasil diubah!');
           renderApp();
         } else {
-          alert('Gagal mengunggah logo.');
+          alert('Gagal mengunggah logo: ' + (resData.message || 'Error'));
         }
       } catch (err) {
         console.error(err);
@@ -2438,7 +2458,7 @@
           <div class="login-wrapper">
             <div class="login-card">
               <div class="login-title">
-                <img src="${state.settings.logoSekolah || 'logo-pkks.png'}" alt="Logo Sekolah" style="width: 40px; height: 40px; object-fit: contain;" />
+                <img src="${state.settings.logoSekolah || 'logo-annisa.png'}" onerror="this.onerror=null; this.src='logo-annisa.png';" alt="Logo Sekolah" style="width: 40px; height: 40px; object-fit: contain;" />
                 <h1>${schoolTitle}</h1>
                 <p>Aplikasi E-PKKS Multi-User 2026</p>
               </div>
@@ -2626,7 +2646,7 @@
                   <!-- KOP HEADER DEDIKASI PER STANDAR -->
                   <div class="print-report-header" style="text-align: center; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 2px solid #0f172a;">
                     <div style="display: flex; align-items: center; justify-content: center; gap: 12px; margin-bottom: 2px;">
-                      <img src="${state.settings.logoSekolah || 'logo-pkks.png'}" alt="Logo Sekolah" style="width: 40px; height: 40px; object-fit: contain;" />
+                      <img src="${state.settings.logoSekolah || 'logo-annisa.png'}" onerror="this.onerror=null; this.src='logo-annisa.png';" alt="Logo Sekolah" style="width: 40px; height: 40px; object-fit: contain;" />
                       <div style="text-align: center;">
                         <h2 style="font-size: 13.5px; font-weight: 900; color: #0f172a; text-transform: uppercase; margin: 0; line-height: 1.2;">INSTRUMEN PENILAIAN KINERJA KEPALA SEKOLAH (PKKS)</h2>
                         <h3 style="font-size: 11.5px; font-weight: 800; color: #059669; margin: 2px 0 0 0; text-transform: uppercase;">${state.settings.namaSekolah || 'NAMA SEKOLAH'}</h3>
@@ -2985,11 +3005,11 @@
               <div class="form-group" style="margin-bottom:16px;">
                 <label class="form-label">Logo Sekolah (PNG/JPG):</label>
                 <div style="display: flex; gap: 12px; align-items: center; background: #f8fafc; padding: 12px; border-radius: 8px; border: 1px dashed #cbd5e1;">
-                  <div style="background: white; border: 1px solid #cbd5e1; padding: 4px; border-radius: 8px;">
-                    <img id="set-logo-preview" src="${s.logoSekolah || 'logo-pkks.png'}" style="width: 50px; height: 50px; object-fit: contain;" />
+                  <div style="background: white; border: 1px solid #cbd5e1; padding: 4px; border-radius: 8px; width: 60px; height: 60px; display: flex; align-items: center; justify-content: center;">
+                    <img id="set-logo-preview" src="${s.logoSekolah || 'logo-annisa.png'}" onerror="this.onerror=null; this.src='logo-annisa.png';" style="width: 50px; height: 50px; object-fit: contain;" />
                   </div>
                   <div style="flex: 1;">
-                    <input type="file" id="set-logo-file" class="form-input" accept="image/*" style="padding: 6px; font-size: 11px; margin-bottom: 8px;" />
+                    <input type="file" id="set-logo-file" onchange="previewSelectedLogo(event)" class="form-input" accept="image/*" style="padding: 6px; font-size: 11px; margin-bottom: 8px;" />
                     <button type="button" onclick="uploadLogoBtn()" class="btn-primary" style="padding: 6px 16px; font-size: 11px; width: auto; background: #0284c7;">📤 Upload & Ganti Logo</button>
                     <input type="hidden" id="set-logo-url" value="${s.logoSekolah || ''}" />
                   </div>
@@ -3218,7 +3238,7 @@
 
           <aside class="sidebar no-print ${state.mobileSidebarOpen ? 'mobile-open' : ''}">
             <div class="brand-header">
-              <img src="${state.settings.logoSekolah || 'logo-pkks.png'}" alt="Logo Sekolah" style="width: 40px; height: 40px; object-fit: contain;" />
+              <img src="${state.settings.logoSekolah || 'logo-annisa.png'}" onerror="this.onerror=null; this.src='logo-annisa.png';" alt="Logo Sekolah" style="width: 40px; height: 40px; object-fit: contain;" />
               <div>
                 <div class="brand-title">${(state.settings.namaSekolah || 'Nama Sekolah').substring(0, 15)}</div>
                 <div class="brand-subtitle">8 Standar PKKS 2026</div>
